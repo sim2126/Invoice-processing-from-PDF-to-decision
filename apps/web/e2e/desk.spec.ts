@@ -34,7 +34,18 @@ async function accessibility(page: Page, name: string) {
 }
 async function launch(page: Page, name: string) {
   await page.goto("/");
-  await page.getByRole("button", { name: `Run ${name}`, exact: true }).click();
+  if (name === "A clean match") {
+    await page
+      .getByRole("button", { name: `Preview ${name} PDF`, exact: true })
+      .click();
+    await page
+      .getByRole("button", { name: "Run this scenario", exact: true })
+      .click();
+  } else {
+    await page
+      .getByRole("button", { name: `Run ${name}`, exact: true })
+      .click();
+  }
   await expect(page).toHaveURL(/\/invoices\//);
 }
 async function outcome(page: Page, name: string) {
@@ -94,6 +105,89 @@ test("queue, file validation, keyboard, fresh session and narrow screen", async 
     .click();
   await expect(
     page.getByRole("heading", { name: "Your next clear decision starts here" }),
+  ).toBeVisible();
+});
+
+test("built-in samples: previews, downloads, retry, keyboard and mobile without submission", async ({
+  page,
+}) => {
+  await page.goto("/#scenarios");
+  const previews = page.getByRole("button", { name: /^Preview .+ PDF$/ });
+  await expect(previews).toHaveCount(5);
+  for (const preview of await previews.all()) {
+    await preview.click();
+    const original = page.getByRole("img", {
+      name: /^Original sample invoice:/,
+    });
+    await expect(original).toBeVisible();
+    await expect
+      .poll(() =>
+        original.evaluate((node) => (node as HTMLImageElement).naturalWidth),
+      )
+      .toBeGreaterThan(600);
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("dialog")).not.toBeVisible();
+    await expect(preview).toBeFocused();
+  }
+  await page.route("**/api/scenarios/clean/preview?*", (route) =>
+    route.fulfill({ status: 503, body: "Temporarily unavailable" }),
+  );
+  await previews.first().click();
+  await expect(page.getByRole("alert")).toContainText("preview could not load");
+  await page.unroute("**/api/scenarios/clean/preview?*");
+  await page
+    .getByRole("button", { name: "Retry preview", exact: true })
+    .click();
+  const image = page.getByRole("img", { name: /^Original sample invoice:/ });
+  await expect
+    .poll(() =>
+      image.evaluate((node) => (node as HTMLImageElement).naturalWidth),
+    )
+    .toBeGreaterThan(600);
+  await page
+    .getByRole("button", { name: "Zoom in preview", exact: true })
+    .click();
+  await expect(page.getByText("125%", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Fit preview", exact: true }).click();
+  await expect(page.getByText("100%", { exact: true })).toBeVisible();
+  await fs.mkdir(shots, { recursive: true });
+  await page.screenshot({ path: path.join(shots, "sample-preview-1440.png") });
+  await accessibility(page, "sample-preview");
+  const pdfDownload = page.waitForEvent("download");
+  await page.getByRole("link", { name: "Download PDF", exact: true }).click();
+  const pdf = await pdfDownload;
+  expect(pdf.suggestedFilename()).toBe("01-clean.pdf");
+  expect(
+    (await fs.readFile((await pdf.path())!)).subarray(0, 5).toString(),
+  ).toBe("%PDF-");
+  await page.keyboard.press("Escape");
+  const packDownload = page.waitForEvent("download");
+  await page
+    .getByRole("link", { name: "Download demo pack (5 PDFs)", exact: true })
+    .click();
+  const pack = await packDownload;
+  expect(pack.suggestedFilename()).toBe("ap-review-desk-demo.zip");
+  expect(
+    (await fs.readFile((await pack.path())!)).subarray(0, 2).toString(),
+  ).toBe("PK");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await previews.last().click();
+  await expect
+    .poll(() =>
+      page
+        .getByRole("img", { name: /^Original sample invoice:/ })
+        .evaluate((node) => (node as HTMLImageElement).naturalWidth),
+    )
+    .toBeGreaterThan(600);
+  await page.screenshot({ path: path.join(shots, "sample-preview-mobile.png") });
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBeTruthy();
+  await page.getByRole("button", { name: "Close dialog", exact: true }).click();
+  await expect(
+    page.getByText("0 of 0 invoices", { exact: true }),
   ).toBeVisible();
 });
 

@@ -301,6 +301,18 @@ def generate(filename, d):
         c.save()
         data = out.getvalue()
     (OUT / filename).write_bytes(data)
+    # Render the actual PDF once at build time for the in-app sample preview.
+    # Previewing a sample must not upload it or call the extraction model.
+    with pdfium.PdfDocument(data) as pdf:
+        page = pdf[0]
+        try:
+            bitmap = page.render(scale=2)
+            image = bitmap.to_pil()
+            image.save(OUT / filename.replace(".pdf", ".preview.png"), format="PNG")
+            image.close()
+            bitmap.close()
+        finally:
+            page.close()
 
 
 if __name__ == "__main__":

@@ -2,12 +2,14 @@
 
 import copy
 import hashlib
+import io
 import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from decimal import Decimal
 from pathlib import Path
 from threading import Event as ThreadEvent
+from zipfile import ZipFile
 
 import pytest
 from ap import pipeline
@@ -288,6 +290,40 @@ def client_for(workspace):
     client.cookies.set("ap_session", workspace[1])
     client.headers.update({"origin": settings.origin, "x-csrf-token": workspace[2]})
     return client
+
+
+def test_demo_preview_and_pack_are_session_scoped_read_only(workspace):
+    client = client_for(workspace)
+    anonymous = TestClient(app)
+    for route in (
+        "/scenarios",
+        "/scenarios/pack",
+        "/scenarios/clean/pdf",
+        "/scenarios/clean/preview",
+    ):
+        assert anonymous.get(route).status_code == 401
+    samples = client.get("/scenarios").json()
+    expected_files = {s["file"] for s in samples}
+    pack = client.get("/scenarios/pack")
+    assert pack.status_code == 200
+    assert pack.headers["content-type"] == "application/zip"
+    with ZipFile(io.BytesIO(pack.content)) as archive:
+        assert set(archive.namelist()) == expected_files | {"START-HERE.txt"}
+        assert "PO-1088" in archive.read("START-HERE.txt").decode()
+        for sample in samples:
+            source = Path("fixtures/pdfs") / sample["file"]
+            original = client.get(f"/scenarios/{sample['id']}/pdf")
+            assert original.content == archive.read(sample["file"]) == source.read_bytes()
+            preview = client.get(f"/scenarios/{sample['id']}/preview")
+            assert preview.status_code == 200
+            assert preview.headers["content-type"] == "image/png"
+            assert preview.content.startswith(b"\x89PNG")
+            assert preview.content == source.with_suffix(".preview.png").read_bytes()
+    assert client.get("/scenarios/not-a-sample/preview").status_code == 404
+    assert client.get("/scenarios/not-a-sample/pdf").status_code == 404
+    assert client.get("/invoices").json()["invoices"] == []
+    with Session() as db:
+        assert db.get(Workspace, workspace[0]).uploads == 0
 
 
 def test_upload_validation_same_file_and_private_sources(workspace):

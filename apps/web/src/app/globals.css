@@ -766,6 +766,17 @@ h1 {
   gap: 12px;
   margin-top: 18px;
 }
+.scenario-guide {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 20px;
+  margin-top: 9px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.7;
+}
 .scenario-card {
   min-width: 0;
   background: #fdfefa;
@@ -851,6 +862,84 @@ h1 {
 .scenario-actions a {
   padding: 5px;
   color: #5d6b54;
+}
+.scenario-actions .scenario-preview-button {
+  padding: 5px;
+  margin-left: auto;
+  margin-right: 6px;
+}
+.scenario-actions .scenario-preview-button:hover,
+.scenario-actions a:hover {
+  background: #eaf0e5;
+  border-radius: 4px;
+}
+.dialog-content.sample-preview-dialog {
+  width: 880px;
+  padding: 24px;
+}
+.sample-preview-toolbar,
+.sample-preview-toolbar > div,
+.sample-preview-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.sample-preview-toolbar {
+  flex-wrap: wrap;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--muted);
+}
+.sample-preview-toolbar button {
+  padding: 6px;
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  color: var(--green);
+}
+.sample-preview-toolbar button:hover {
+  background: #eaf0e5;
+}
+.sample-preview-canvas {
+  height: 52dvh;
+  overflow: auto;
+  background: #edf0eb;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-top: 0;
+}
+.sample-preview-canvas img {
+  display: block;
+  max-width: none;
+  height: auto;
+  margin: 0 auto;
+  box-shadow: 0 2px 12px #20262215;
+}
+.sample-preview-canvas p {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+.sample-preview-error {
+  display: grid;
+  justify-items: start;
+  gap: 15px;
+  padding: 20px;
+}
+.sample-preview-context {
+  font-size: 12px;
+  line-height: 1.7;
+  margin: 15px 0;
+}
+.sample-preview-context p {
+  color: var(--muted);
+  margin-top: 4px;
+}
+.sample-preview-actions {
+  flex-wrap: wrap;
 }
 .page-footer {
   display: flex;
@@ -2055,6 +2144,13 @@ h1 {
   }
 }
 @media (max-width: 700px) {
+  .dialog-content.sample-preview-dialog {
+    padding: 20px;
+  }
+  .sample-preview-canvas {
+    height: 40dvh;
+    padding: 12px;
+  }
   .sidebar {
     display: none;
   }

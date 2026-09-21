@@ -1,8 +1,10 @@
 import asyncio
 import copy
 import hashlib
+import io
 import re
 from pathlib import Path
+from zipfile import ZIP_DEFLATED, ZipFile
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -742,14 +744,54 @@ def scenarios(workspace=Depends(session)):
     return SCENARIOS
 
 
-@app.get("/scenarios/{scenario_id}/pdf")
-def sample(scenario_id: str, workspace=Depends(session)):
+def scenario_file(scenario_id: str):
     scenario = next((s for s in SCENARIOS if s["id"] == scenario_id), None)
     if not scenario:
         raise HTTPException(404, "Scenario not found.")
-    path = ROOT / "fixtures" / "pdfs" / scenario["file"]
+    return ROOT / "fixtures" / "pdfs" / scenario["file"]
+
+
+@app.get("/scenarios/pack")
+def sample_pack(workspace=Depends(session)):
+    instructions = (
+        "AP Review Desk - synthetic demo pack\n\n"
+        "Open the review desk and choose Demo scenarios. All five PDFs are built in.\n"
+        "Use the eye icon to preview a PDF, Run scenario to process it, or Upload invoice\n"
+        "to upload a file from this pack. Both routes use real PDF extraction and checks.\n"
+        "Start fresh demo restores the original fictional vendor and PO balances.\n"
+        "No separate vendor or PO import is needed.\n\n"
+        "Run 01-clean.pdf before 02-duplicate.pdf in the same workspace.\n"
+        "PO-1042 has a $10,000 ceiling, $6,000 already accepted and $4,000 remaining.\n"
+        "For 04-ambiguous.pdf, select PO-1088 in Review & resolve and record a reason.\n"
+        "For 05-scan-conflict.pdf, the printed $990 total disagrees with $900 of items.\n"
+        "Keep it on hold and request a corrected invoice; do not change true source facts.\n\n"
+        "Expected outcomes (not guaranteed extraction results):\n"
+        + "\n".join(f"{s['file']}: {s['expected']}. {s['description']}" for s in SCENARIOS)
+        + "\n\nAll companies and invoices are fictional. Approval does not execute payment.\n"
+    )
+    output = io.BytesIO()
+    with ZipFile(output, "w", compression=ZIP_DEFLATED) as archive:
+        archive.writestr("START-HERE.txt", instructions)
+        for scenario in SCENARIOS:
+            archive.write(scenario_file(scenario["id"]), arcname=scenario["file"])
+    return Response(
+        output.getvalue(),
+        media_type="application/zip",
+        headers={"Content-Disposition": 'attachment; filename="ap-review-desk-demo.zip"'},
+    )
+
+
+@app.get("/scenarios/{scenario_id}/preview")
+def sample_preview(scenario_id: str, workspace=Depends(session)):
+    path = scenario_file(scenario_id).with_suffix(".preview.png")
+    return Response(path.read_bytes(), media_type="image/png")
+
+
+@app.get("/scenarios/{scenario_id}/pdf")
+def sample(scenario_id: str, workspace=Depends(session)):
+    path = scenario_file(scenario_id)
     return Response(
         path.read_bytes(),
         media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="{scenario["file"]}"'},
+        headers={"Content-Disposition": f'attachment; filename="{path.name}"'},
     )

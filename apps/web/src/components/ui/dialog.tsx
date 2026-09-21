@@ -9,17 +9,19 @@ export function DialogContent({
   title,
   description,
   children,
+  className = "",
 }: {
   title: string;
   description: string;
   children: ReactNode;
+  className?: string;
 }) {
   const opener = useRef<HTMLElement | null>(null);
   return (
     <DialogPrimitive.Portal>
       <DialogPrimitive.Overlay className="dialog-overlay" />
       <DialogPrimitive.Content
-        className="dialog-content"
+        className={`dialog-content ${className}`}
         onOpenAutoFocus={() => {
           opener.current = document.activeElement as HTMLElement;
         }}

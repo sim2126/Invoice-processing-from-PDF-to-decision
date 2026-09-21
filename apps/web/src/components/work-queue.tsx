@@ -19,6 +19,7 @@ import {
   CircleAlert,
   Clock3,
   Copy,
+  Eye,
   FileCheck2,
   FileSearch,
   FileText,
@@ -36,6 +37,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { Badge, ErrorNotice, Metric, Policy, status } from "./common";
+import { ScenarioPreview } from "./scenario-preview";
 
 export function WorkQueue({
   session,
@@ -75,6 +77,7 @@ export function WorkQueue({
   }, []);
   const [filter, setFilter] = useState("ALL");
   const [sort, setSort] = useState("newest");
+  const [preview, setPreview] = useState<Scenario | null>(null);
   const launch = useMutation({
     mutationFn: async (scenario: Scenario) => {
       const response = await fetch(`/api/scenarios/${scenario.id}/pdf`);
@@ -348,9 +351,18 @@ export function WorkQueue({
           </button>
         </div>
         <p className="scenario-intro">
-          Five synthetic scenarios, using the same upload and extraction flow as
-          your invoices.
+          Five built-in PDFs, ready to preview or run. Vendors, purchase orders
+          and prior balances are already set up in your private demo workspace.
         </p>
+        <div className="scenario-guide">
+          <span>
+            Use the eye icon to inspect a PDF. Run the clean match before the
+            duplicate.
+          </span>
+          <a className="text-button" href="/api/scenarios/pack" download>
+            <ArrowDownToLine size={15} /> Download demo pack (5 PDFs)
+          </a>
+        </div>
         <ErrorNotice error={launch.error || scenarios.error} />
         <div className="scenario-grid">
           {scenarios.data?.map((s, index) => {
@@ -379,12 +391,25 @@ export function WorkQueue({
                     ) : (
                       <Play size={13} />
                     )}
-                    Run scenario
+                    Run
+                  </button>
+                  <button
+                    className="scenario-preview-button"
+                    disabled={launch.isPending}
+                    onClick={() => {
+                      launch.reset();
+                      setPreview(s);
+                    }}
+                    aria-label={`Preview ${s.title} PDF`}
+                    title={`Preview ${s.title} PDF`}
+                  >
+                    <Eye size={16} />
                   </button>
                   <a
                     href={`/api/scenarios/${s.id}/pdf`}
                     download
                     aria-label={`Download ${s.title} PDF`}
+                    title={`Download ${s.title} PDF`}
                   >
                     <ArrowDownToLine size={16} />
                   </a>
@@ -394,6 +419,16 @@ export function WorkQueue({
           })}
         </div>
       </section>
+      {preview && (
+        <ScenarioPreview
+          key={preview.id}
+          scenario={preview}
+          onClose={() => setPreview(null)}
+          onRun={() => launch.mutate(preview)}
+          pending={launch.isPending}
+          error={launch.error}
+        />
+      )}
       <footer className="page-footer">
         <span>Designed for a considered decision.</span>
         <Policy />
