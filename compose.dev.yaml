@@ -1,0 +1,16 @@
+# Optional development overlay. Runtime code and fixtures stay readable; secrets remain env-only.
+services:
+  api:
+    volumes:
+      - ./services:/app/services:ro
+      - ./scripts:/app/scripts:ro
+      - ./tests:/app/tests:ro
+      - ./fixtures:/app/fixtures:ro
+      - ./docs:/app/docs
+  worker:
+    volumes:
+      - ./services:/app/services:ro
+      - ./fixtures:/app/fixtures:ro
+  dispatcher:
+    volumes:
+      - ./services:/app/services:ro

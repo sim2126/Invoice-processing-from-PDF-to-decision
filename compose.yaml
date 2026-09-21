@@ -1,0 +1,85 @@
+name: ap-review-desk
+services:
+  db:
+    image: postgres:17.6-bookworm
+    environment:
+      POSTGRES_USER: ap
+      POSTGRES_PASSWORD: ap_local_only
+      POSTGRES_DB: apdesk
+    ports: ["127.0.0.1:5434:5432"]
+    volumes: ["postgres_data:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ap -d apdesk"]
+      interval: 5s
+      retries: 20
+  redis:
+    image: redis:7.4.5-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports: ["127.0.0.1:6381:6379"]
+    volumes: ["redis_data:/data"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 10
+  storage:
+    image: quay.io/minio/minio:RELEASE.2025-07-23T15-54-02Z
+    command: server /data --console-address :9001
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY:-apdesk_local}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:-apdesk_local_storage_only}
+    ports: ["127.0.0.1:9002:9000", "127.0.0.1:9003:9001"]
+    volumes: ["storage_data:/data"]
+  api:
+    image: ap-review-desk-api:local
+    mem_limit: 768m
+    cpus: 1.5
+    restart: unless-stopped
+    build:
+      context: .
+      dockerfile: services/api/Dockerfile
+    env_file: .env
+    environment: &backend
+      DATABASE_URL: postgresql+psycopg://ap:ap_local_only@db:5432/apdesk
+      REDIS_URL: redis://redis:6379/0
+      S3_ENDPOINT: http://storage:9000
+    ports: ["127.0.0.1:8005:8000"]
+    command: ["sh", "-c", "uv run --no-sync alembic upgrade head && uv run --no-sync python scripts/init_storage.py && uv run --no-sync uvicorn ap.main:app --host 0.0.0.0 --port 8000"]
+    depends_on:
+      db: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      storage: {condition: service_started}
+    healthcheck:
+      test: ["CMD", "uv", "run", "--no-sync", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      retries: 15
+  worker:
+    image: ap-review-desk-api:local
+    mem_limit: 1g
+    cpus: 1.5
+    restart: unless-stopped
+    env_file: .env
+    environment: *backend
+    command: ["uv", "run", "--no-sync", "celery", "-A", "ap.worker:celery", "worker", "--loglevel=info", "--concurrency=2"]
+    depends_on:
+      api: {condition: service_healthy}
+    stop_grace_period: 30s
+  dispatcher:
+    image: ap-review-desk-api:local
+    restart: unless-stopped
+    env_file: .env
+    environment: *backend
+    command: ["uv", "run", "--no-sync", "python", "-m", "ap.dispatcher"]
+    depends_on:
+      api: {condition: service_healthy}
+  web:
+    build:
+      context: apps/web
+    environment:
+      API_INTERNAL_URL: http://api:8000
+    ports: ["127.0.0.1:3000:3000"]
+    depends_on:
+      api: {condition: service_healthy}
+volumes:
+  postgres_data:
+  redis_data:
+  storage_data:

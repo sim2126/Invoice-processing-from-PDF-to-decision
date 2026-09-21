@@ -1,0 +1,533 @@
+"""PostgreSQL integration tests. Provider doubles exist only in this test module."""
+
+import copy
+import hashlib
+import os
+from concurrent.futures import ThreadPoolExecutor
+from datetime import timedelta
+from decimal import Decimal
+from pathlib import Path
+from threading import Event as ThreadEvent
+
+import pytest
+from ap import pipeline
+from ap.config import settings
+from ap.db import (
+    PO,
+    Commitment,
+    Decision,
+    Invoice,
+    Revision,
+    Run,
+    Session,
+    Workspace,
+    engine,
+    now,
+    uid,
+)
+from ap.main import app
+from ap.seed import seed_workspace
+from fastapi.testclient import TestClient
+from sqlalchemy import event as sql_event
+from sqlalchemy import func, select, text
+from sqlalchemy.exc import DBAPIError
+
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.skipif(
+        os.getenv("AP_INTEGRATION") != "1",
+        reason="Set AP_INTEGRATION=1 with the dedicated PostgreSQL test database",
+    ),
+]
+
+
+@pytest.fixture(autouse=True)
+def dedicated_database():
+    assert settings.database_url.endswith("/apdesk_test"), (
+        "Integration tests require a separate apdesk_test database"
+    )
+    # Previous test executions intentionally retain immutable records. Retire only
+    # their unfinished jobs so the bounded dispatcher batch belongs to this test.
+    with Session.begin() as db:
+        db.execute(text("UPDATE run SET state='FAILED' WHERE state IN ('QUEUED', 'RUNNING')"))
+
+
+@pytest.fixture
+def workspace():
+    with Session.begin() as db:
+        w, token = seed_workspace(db)
+        return w.id, token, w.csrf
+
+
+def pages_and_citations(data):
+    """Test-only independently addressable source observations."""
+    words, citations = [], []
+    pairs = [(k, v) for k, v in data.items() if isinstance(v, str)]
+    pairs += [
+        (f"lines.{i}.{k}", v)
+        for i, line in enumerate(data["lines"])
+        for k, v in line.items()
+        if v is not None
+    ]
+    for y, (key, value) in enumerate(pairs):
+        quote = f"{key}: {value}"
+        citations.append({"field": key, "page": 1, "quote": quote, "raw": value})
+        for x, word in enumerate(quote.split()):
+            words.append(
+                {
+                    "text": word,
+                    "x0": x * 50,
+                    "x1": x * 50 + 45,
+                    "top": y * 20,
+                    "bottom": y * 20 + 12,
+                }
+            )
+    data["evidence"] = citations
+    return [
+        {
+            "page": 1,
+            "width": 612,
+            "height": 792,
+            "method": "native",
+            "text": " ".join(w["text"] for w in words),
+            "words": words,
+        }
+    ]
+
+
+def pending(workspace_id, facts, quantity="12", reference=None):
+    facts = copy.deepcopy(facts)
+    facts["invoice_number"] = reference or "TEST-" + uid()[:8]
+    facts["lines"][0]["quantity"] = quantity
+    facts["subtotal"] = facts["total"] = facts["lines"][0]["total"] = str(Decimal(quantity) * 100)
+    pages = pages_and_citations(facts)
+    with Session.begin() as db:
+        invoice = Invoice(
+            workspace_id=workspace_id,
+            filename="test.pdf",
+            sha256=hashlib.sha256(uid().encode()).hexdigest(),
+            object_key="test",
+        )
+        db.add(invoice)
+        db.flush()
+        token = uid()
+        run = Run(
+            invoice_id=invoice.id,
+            revision=1,
+            state="RUNNING",
+            attempt=1,
+            attempt_token=token,
+            started_at=now(),
+            lease_until=now() + timedelta(minutes=5),
+        )
+        db.add(run)
+        db.flush()
+        invoice.current_run = run.id
+        db.add(Revision(invoice_id=invoice.id, number=1))
+        return invoice.id, run.id, token, facts, pages
+
+
+def finish(record):
+    invoice_id, run_id, token, facts, pages = record
+    pipeline.finalize(run_id, token, facts, pages, {"model": "isolated-test-double", "usage": {}})
+    with Session() as db:
+        return db.scalar(select(Decision).where(Decision.run_id == run_id)).outcome
+
+
+def test_concurrent_po_spend_and_quantities(workspace, facts):
+    records = [pending(workspace[0], facts, "25") for _ in range(2)]
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        outcomes = list(pool.map(finish, records))
+    assert sorted(outcomes) == ["APPROVED", "NEEDS_REVIEW"]
+    with Session() as db:
+        assert db.scalar(
+            select(func.sum(Commitment.amount)).where(Commitment.workspace_id == workspace[0])
+        ) == Decimal("8500")
+
+
+def test_delivery_and_finalization_idempotency(workspace, facts):
+    record = pending(workspace[0], facts)
+    assert finish(record) == "APPROVED"
+    assert finish(record) == "APPROVED"
+    pipeline.process(record[1])
+    with Session() as db:
+        assert (
+            db.scalar(
+                select(func.count())
+                .select_from(Commitment)
+                .where(Commitment.invoice_id == record[0])
+            )
+            == 1
+        )
+        assert (
+            db.scalar(
+                select(func.count()).select_from(Decision).where(Decision.invoice_id == record[0])
+            )
+            == 1
+        )
+
+
+def test_business_identity_concurrent(workspace, facts):
+    records = [pending(workspace[0], facts, "10", "SAME-001") for _ in range(2)]
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        outcomes = list(pool.map(finish, records))
+    assert sorted(outcomes) == ["APPROVED", "BLOCKED"]
+
+
+def test_old_attempt_and_revision_cannot_write(workspace, facts):
+    record = pending(workspace[0], facts)
+    with Session.begin() as db:
+        db.get(Run, record[1]).attempt_token = "new-token"
+    pipeline.finalize(record[1], record[2], record[3], record[4], {"model": "test"})
+    with Session() as db:
+        assert (
+            db.scalar(
+                select(func.count()).select_from(Decision).where(Decision.invoice_id == record[0])
+            )
+            == 0
+        )
+    with Session.begin() as db:
+        db.get(Run, record[1]).attempt_token = record[2]
+        db.get(Invoice, record[0]).revision = 2
+    pipeline.finalize(record[1], record[2], record[3], record[4], {"model": "test"})
+    with Session() as db:
+        assert (
+            db.scalar(
+                select(func.count())
+                .select_from(Commitment)
+                .where(Commitment.invoice_id == record[0])
+            )
+            == 0
+        )
+
+
+def test_revision_is_refreshed_after_waiting_for_lock(workspace, facts):
+    record = pending(workspace[0], facts)
+    waiting = ThreadEvent()
+
+    def before_cursor(connection, cursor, statement, parameters, context, many):
+        if "FROM workspace" in statement and "FOR UPDATE" in statement:
+            waiting.set()
+
+    with ThreadPoolExecutor(max_workers=1) as pool, Session.begin() as db:
+        db.execute(select(Workspace).where(Workspace.id == workspace[0]).with_for_update())
+        sql_event.listen(engine, "before_cursor_execute", before_cursor)
+        future = pool.submit(
+            pipeline.finalize,
+            record[1],
+            record[2],
+            record[3],
+            record[4],
+            {"model": "isolated-test-double"},
+        )
+        try:
+            assert waiting.wait(10)
+            invoice = db.get(Invoice, record[0])
+            invoice.revision = 2
+            db.get(Run, record[1]).attempt_token = "newer-worker-token"
+            db.commit()
+            future.result(timeout=10)
+        finally:
+            sql_event.remove(engine, "before_cursor_execute", before_cursor)
+    with Session() as db:
+        assert (
+            db.scalar(
+                select(func.count()).select_from(Decision).where(Decision.invoice_id == record[0])
+            )
+            == 0
+        )
+
+
+def test_database_budget_guard(workspace):
+    with Session() as db:
+        po = db.scalar(select(PO).where(PO.workspace_id == workspace[0], PO.reference == "PO-1042"))
+        data = dict(
+            workspace_id=workspace[0],
+            po_id=po.id,
+            vendor_id=po.vendor_id,
+            identity="DB-GUARD",
+            currency="USD",
+            invoice_date="2026-09-15",
+            quantities={"PAPER-A4": "1"},
+        )
+    with pytest.raises(DBAPIError), Session.begin() as db:
+        db.add(Commitment(**data, amount=Decimal("4000.01")))
+        db.flush()
+
+
+def test_database_quantity_guard(workspace):
+    with Session() as db:
+        po = db.scalar(select(PO).where(PO.workspace_id == workspace[0], PO.reference == "PO-1042"))
+    with pytest.raises(DBAPIError), Session.begin() as db:
+        db.add(
+            Commitment(
+                workspace_id=workspace[0],
+                po_id=po.id,
+                vendor_id=po.vendor_id,
+                identity="Q-GUARD",
+                currency="USD",
+                invoice_date="2026-09-15",
+                quantities={"PAPER-A4": "41"},
+                amount=Decimal("1"),
+            )
+        )
+        db.flush()
+
+
+def test_history_immutable(workspace, facts):
+    record = pending(workspace[0], facts)
+    finish(record)
+    with pytest.raises(DBAPIError), Session.begin() as db:
+        db.execute(
+            text("UPDATE decision SET summary='rewritten' WHERE invoice_id=:id"), {"id": record[0]}
+        )
+
+
+def client_for(workspace):
+    client = TestClient(app)
+    client.cookies.set("ap_session", workspace[1])
+    client.headers.update({"origin": settings.origin, "x-csrf-token": workspace[2]})
+    return client
+
+
+def test_upload_validation_same_file_and_private_sources(workspace):
+    client = client_for(workspace)
+    assert (
+        client.post(
+            "/invoices", files={"file": ("bad.pdf", b"not pdf", "application/pdf")}
+        ).status_code
+        == 422
+    )
+    data = Path("fixtures/pdfs/01-clean.pdf").read_bytes()
+    first = client.post("/invoices", files={"file": ("invoice.pdf", data, "application/pdf")})
+    assert first.status_code == 201, first.text
+    second = client.post("/invoices", files={"file": ("copy.pdf", data, "application/pdf")})
+    assert second.json()["id"] == first.json()["id"]
+    assert second.json()["existing"] is True
+    with Session.begin() as db:
+        other, token = seed_workspace(db)
+    stranger = client_for((other.id, token, other.csrf))
+    invoice_id = first.json()["id"]
+    for route in [
+        f"/invoices/{invoice_id}",
+        f"/invoices/{invoice_id}/source",
+        f"/invoices/{invoice_id}/pages/1",
+        f"/invoices/{invoice_id}/export",
+        f"/invoices/{invoice_id}/events",
+    ]:
+        assert stranger.get(route).status_code == 404
+    assert (
+        stranger.post(f"/invoices/{invoice_id}/retry", json={"expected_revision": 1}).status_code
+        == 404
+    )
+    assert client.get(f"/invoices/{invoice_id}/source").content == data
+
+
+def test_origin_csrf_expiry(workspace):
+    client = client_for(workspace)
+    assert client.post("/session", headers={"origin": "https://wrong.example"}).status_code == 403
+    data = Path("fixtures/pdfs/01-clean.pdf").read_bytes()
+    assert (
+        client.post(
+            "/invoices",
+            files={"file": ("a.pdf", data, "application/pdf")},
+            headers={"x-csrf-token": "wrong"},
+        ).status_code
+        == 403
+    )
+    with Session.begin() as db:
+        db.get(Workspace, workspace[0]).expires_at = now() - timedelta(seconds=1)
+    assert client.get("/invoices").status_code == 401
+
+
+def test_review_loop_and_stale_edit(workspace, facts):
+    record = pending(workspace[0], facts)
+    record[3]["po_reference"] = None
+    assert finish(record) == "NEEDS_REVIEW"
+    client = client_for(workspace)
+    detail = client.get(f"/invoices/{record[0]}")
+    assert detail.status_code == 200, detail.text
+    po = detail.json()["candidates"]["orders"][0]
+    payload = {
+        "expected_revision": 1,
+        "po_id": po["id"],
+        "reason": "Confirmed against the procurement work order.",
+    }
+    assert client.post(f"/invoices/{record[0]}/review", json=payload).status_code == 200
+    assert client.post(f"/invoices/{record[0]}/review", json=payload).status_code == 409
+    with Session() as db:
+        invoice = db.get(Invoice, record[0])
+        new_run = invoice.current_run
+    pipeline.process(new_run)
+    current = client.get(f"/invoices/{record[0]}").json()
+    assert current["invoice"]["outcome"] == "APPROVED", current
+    assert len(current["history"]) == 2
+    assert current["invoice"]["human_touched"] is True
+    assert (
+        client.post(
+            f"/invoices/{record[0]}/review", json={**payload, "expected_revision": 2}
+        ).status_code
+        == 409
+    )
+    assert client.get(f"/invoices/{record[0]}/export").json()["provenance"]["document_sha256"]
+
+
+def test_no_failure_decision_and_retry_bound(workspace, facts, monkeypatch):
+    record = pending(workspace[0], facts)
+    with Session.begin() as db:
+        run = db.get(Run, record[1])
+        run.state, run.attempt, run.lease_until = "QUEUED", 0, None
+        invoice = db.get(Invoice, record[0])
+        invoice.page_data = record[4]
+    monkeypatch.setattr(pipeline.storage, "get", lambda _: b"isolated test double")
+    monkeypatch.setattr(
+        pipeline.extraction,
+        "extract",
+        lambda _: (_ for _ in ()).throw(
+            pipeline.extraction.ExtractionFailure("Test provider unavailable")
+        ),
+    )
+    pipeline.process(record[1])
+    with Session() as db:
+        assert db.get(Run, record[1]).state == "FAILED"
+        assert db.get(Invoice, record[0]).current_decision is None
+        assert (
+            db.scalar(
+                select(func.count())
+                .select_from(Commitment)
+                .where(Commitment.invoice_id == record[0])
+            )
+            == 0
+        )
+
+
+def test_dispatch_failure_is_recoverable(workspace, facts, monkeypatch):
+    from ap import dispatcher
+
+    record = pending(workspace[0], facts)
+    with Session.begin() as db:
+        r = db.get(Run, record[1])
+        r.state, r.attempt, r.lease_until = "QUEUED", 0, None
+
+    def fail(*args, **kwargs):
+        raise ConnectionError("isolated broker outage")
+
+    monkeypatch.setattr(dispatcher.process_invoice, "apply_async", fail)
+    dispatcher.dispatch_once()
+    with Session() as db:
+        assert db.get(Run, record[1]).state == "QUEUED"
+        assert db.get(Run, record[1]).dispatched_at is None
+    sent = []
+    monkeypatch.setattr(
+        dispatcher.process_invoice, "apply_async", lambda **kw: sent.append(kw["args"][0])
+    )
+    dispatcher.dispatch_once()
+    assert record[1] in sent
+
+
+def test_transient_provider_retry_is_bounded(workspace, facts, monkeypatch):
+    import httpx
+    from openai import APIConnectionError
+
+    record = pending(workspace[0], facts)
+    with Session.begin() as db:
+        run = db.get(Run, record[1])
+        run.state, run.attempt, run.lease_until = "QUEUED", 0, None
+        db.get(Invoice, record[0]).page_data = record[4]
+    calls = []
+
+    def unavailable(_):
+        calls.append(1)
+        raise APIConnectionError(request=httpx.Request("POST", "https://provider.invalid"))
+
+    monkeypatch.setattr(pipeline.storage, "get", lambda _: b"test provider input")
+    monkeypatch.setattr(pipeline.extraction, "extract", unavailable)
+    for attempt in range(1, 4):
+        pipeline.process(record[1])
+        with Session.begin() as db:
+            run = db.get(Run, record[1])
+            assert run.attempt == attempt
+            assert run.state == ("QUEUED" if attempt < 3 else "FAILED")
+            assert db.get(Invoice, record[0]).current_decision is None
+            if attempt < 3:
+                assert run.retry_at > now()
+                run.retry_at = now() - timedelta(seconds=1)
+    pipeline.process(record[1])
+    assert len(calls) == 3
+    with Session() as db:
+        assert (
+            db.scalar(
+                select(func.count())
+                .select_from(Commitment)
+                .where(Commitment.invoice_id == record[0])
+            )
+            == 0
+        )
+
+
+def test_expired_worker_lease_recovers_without_duplicate_commitment(workspace, facts, monkeypatch):
+    from ap import dispatcher
+
+    record = pending(workspace[0], facts)
+    with Session.begin() as db:
+        run = db.get(Run, record[1])
+        run.lease_until = now() - timedelta(seconds=1)
+        db.get(Invoice, record[0]).page_data = record[4]
+        revision = db.scalar(select(Revision).where(Revision.invoice_id == record[0]))
+        revision.extraction = record[3]
+    sent = []
+    monkeypatch.setattr(
+        dispatcher.process_invoice, "apply_async", lambda **kw: sent.append(kw["args"][0])
+    )
+    dispatcher.dispatch_once()
+    assert record[1] in sent
+    pipeline.process(record[1])
+    pipeline.finalize(record[1], record[2], record[3], record[4], {"model": "stale-test-worker"})
+    with Session() as db:
+        assert db.get(Run, record[1]).attempt == 2
+        assert db.get(Run, record[1]).state == "COMPLETED"
+        assert (
+            db.scalar(
+                select(func.count())
+                .select_from(Commitment)
+                .where(Commitment.invoice_id == record[0])
+            )
+            == 1
+        )
+
+
+def test_events_persist_monotonic_and_resume(workspace, facts):
+    from ap.main import events_payload
+
+    record = pending(workspace[0], facts)
+    finish(record)
+    with Session() as db:
+        events = events_payload(db, record[0])
+        assert len(events) == 2
+        assert events[1].id > events[0].id
+        assert [e.id for e in events_payload(db, record[0], events[0].id)] == [events[1].id]
+
+
+def test_detail_uses_consistent_snapshot_during_finalization(workspace, facts):
+    record = pending(workspace[0], facts)
+    triggered = ThreadEvent()
+
+    def after_invoice_read(connection, cursor, statement, parameters, context, many):
+        if "FROM invoice" in statement and not triggered.is_set():
+            triggered.set()
+            finish(record)
+
+    sql_event.listen(engine, "after_cursor_execute", after_invoice_read)
+    try:
+        response = client_for(workspace).get(f"/invoices/{record[0]}")
+    finally:
+        sql_event.remove(engine, "after_cursor_execute", after_invoice_read)
+    assert triggered.is_set()
+    assert response.status_code == 200
+    snapshot = response.json()
+    assert snapshot["run"]["state"] == "RUNNING"
+    assert snapshot["invoice"]["outcome"] is None
+    assert snapshot["decision"] is None
+    current = client_for(workspace).get(f"/invoices/{record[0]}").json()
+    assert current["run"]["state"] == "COMPLETED"
+    assert current["invoice"]["outcome"] == current["decision"]["outcome"] == "APPROVED"

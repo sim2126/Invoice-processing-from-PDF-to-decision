@@ -1,0 +1,27 @@
+[project]
+name = "ap-review-desk"
+version = "0.1.0"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+  "fastapi==0.141.1", "pydantic==2.13.5", "sqlalchemy==2.0.54",
+  "alembic==1.20.0", "celery==5.6.3", "redis==8.1.0", "openai==3.16.2",
+  "pdfplumber==0.11.10", "pypdfium2==5.13.0", "pytesseract==0.3.13",
+  "boto3==1.43.98", "uvicorn==0.53.0", "psycopg[binary]==3.3.6",
+  "python-multipart==0.0.22", "python-dotenv==1.2.2", "httpx==0.28.1",
+  "Pillow==12.2.0"
+]
+
+[dependency-groups]
+dev = ["pytest==9.1.1", "hypothesis==6.168.0", "reportlab==5.0.1", "ruff==0.16.8"]
+
+[tool.pytest.ini_options]
+pythonpath = ["services/api", "."]
+testpaths = ["tests"]
+markers = ["integration: requires PostgreSQL and S3", "live: requires real OpenAI credentials"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
