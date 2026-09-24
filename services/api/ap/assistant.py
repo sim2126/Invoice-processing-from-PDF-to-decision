@@ -9,7 +9,7 @@ import re
 from typing import Literal
 
 from openai import OpenAI
-from pydantic import Field
+from pydantic import Field, create_model
 from sqlalchemy import select
 
 from .config import POLICY_VERSION, settings
@@ -150,6 +150,14 @@ def retrieve(db, workspace_id, data, pages, vendors, orders):
     return sources, candidates
 
 
+def literal_enum_schema(schema):
+    """Keep singleton Literal constraints in the provider's documented enum form."""
+    if "const" in schema:
+        schema["enum"] = [schema.pop("const")]
+    for alternative in schema.get("anyOf", []):
+        literal_enum_schema(alternative)
+
+
 def recommend(data, result, sources, candidates):
     sources = [
         *sources,
@@ -160,6 +168,25 @@ def recommend(data, result, sources, candidates):
             "text": " ".join(check["message"] for check in result.get("checks", [])),
         },
     ]
+    # Encode this retrieval's allowed IDs in the provider schema as well as
+    # checking them below. Free-form IDs can otherwise turn a useful answer
+    # into an unsupported citation or purchase-order suggestion.
+    source_ids = tuple(dict.fromkeys(source["id"] for source in sources))
+    candidate_ids = tuple(dict.fromkeys(candidate["id"] for candidate in candidates))
+    citation_format = create_model(
+        "RetrievedSourceQuote",
+        __base__=SourceQuote,
+        source_id=(Literal[source_ids], Field(json_schema_extra=literal_enum_schema)),
+    )
+    recommendation_format = create_model(
+        "RetrievedRecommendation",
+        __base__=Recommendation,
+        suggested_po_id=(
+            Literal[candidate_ids] | None if candidate_ids else type(None),
+            Field(json_schema_extra=literal_enum_schema),
+        ),
+        citations=(list[citation_format], Field(min_length=1, max_length=8)),
+    )
     client = OpenAI(api_key=settings.api_key, timeout=45, max_retries=0)
     response = client.responses.parse(
         model=settings.model,
@@ -174,7 +201,7 @@ def recommend(data, result, sources, candidates):
                 "candidates": candidates,
             }
         ),
-        text_format=Recommendation,
+        text_format=recommendation_format,
     )
     if response.status != "completed" or response.output_parsed is None:
         raise ValueError("Incomplete assistant response")

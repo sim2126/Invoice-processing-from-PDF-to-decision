@@ -346,7 +346,82 @@ followup_cases = [
 ]
 
 
+def draw_followup_invoice(c, d):
+    """Explicit field labels make every extracted value easy to cite verbatim."""
+    ink, muted, line = (HexColor(value) for value in ("#092F39", "#597078", "#D8E2E5"))
+    c.setFillColor(ink)
+    c.setFont("Helvetica-Bold", 22)
+    c.drawString(42, 744, d["vendor"])
+    c.setFont("Helvetica-Bold", 12)
+    c.drawRightString(570, 746, "INVOICE")
+    c.setFillColor(muted)
+    c.setFont("Helvetica", 9)
+    c.drawString(42, 722, "ACCOUNTS RECEIVABLE / BILLING STATEMENT")
+    c.setStrokeColor(line)
+    c.line(42, 707, 570, 707)
+    c.setFillColor(ink)
+    c.setFont("Helvetica", 11)
+    for y, label, value in [
+        (680, "Vendor ID", d["identifier"]),
+        (660, "Invoice number", d["number"]),
+        (640, "Invoice date", d["date"]),
+        (620, "Currency", d["currency"]),
+    ]:
+        c.drawString(42, y, f"{label}: {value}")
+    c.setFont("Helvetica-Bold", 11)
+    c.drawString(42, 585, "Bill to: Northstar Studio")
+    c.setFont("Helvetica", 10)
+    c.drawString(42, 568, "125 Workshop Lane, Portland, OR")
+    c.line(42, 550, 570, 550)
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(42, 529, "Invoice item")
+    c.setFont("Helvetica", 11)
+    for y, label, value in [
+        (507, "Item SKU", d["sku"]),
+        (489, "Description", d["description"]),
+        (471, "Quantity", d["quantity"]),
+        (453, "Unit of measure", d["unit"]),
+        (435, "Unit price", f"{Decimal(d['price']):.2f}"),
+        (417, "Line discount", "0.00"),
+        (399, "Line total", f"{Decimal(d['quantity']) * Decimal(d['price']):.2f}"),
+    ]:
+        # Each label and value is printed as one text span, never a table lookup.
+        c.drawString(42, y, f"{label}: {value}")
+    c.line(42, 382, 570, 382)
+    for y, label, value in [
+        (363, "Subtotal", f"{Decimal(d['subtotal']):.2f}"),
+        (345, "Header discount", "0.00"),
+        (327, "Shipping", "0.00"),
+        (309, "Tax", f"{Decimal(d['tax']):.2f}"),
+        (291, "Tax rate", "0%"),
+    ]:
+        c.drawString(42, y, f"{label}: {value}")
+    c.setFont("Helvetica-Bold", 17)
+    c.drawString(42, 260, f"Total {d['currency']}: {Decimal(d['total']):.2f}")
+    c.setFillColor(muted)
+    c.setFont("Helvetica", 10)
+    c.drawString(42, 242, "Line prices exclude tax.")
+    c.line(42, 226, 570, 226)
+    c.setFillColor(ink)
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(42, 207, "Service / delivery note")
+    c.setFont("Helvetica", 10)
+    for index, text in enumerate(simpleSplit(d["followup_scope"], "Helvetica", 10, 528)):
+        c.drawString(42, 189 - index * 16, text)
+    c.drawString(42, 155, "Payment terms: Net 30.")
+    c.drawString(42, 139, "Please include the invoice number with queries.")
+    c.setStrokeColor(line)
+    c.line(42, 84, 570, 84)
+    c.setFillColor(muted)
+    c.setFont("Helvetica", 8)
+    c.drawString(42, 63, "SYNTHETIC DOCUMENT | FICTIONAL VENDOR | FOR DEMONSTRATION ONLY")
+    c.drawRightString(570, 45, "Page 1")
+
+
 def draw(c, d, page=1):
+    if d.get("followup_scope"):
+        draw_followup_invoice(c, d)
+        return
     layout = d["layout"]
     accent = ["#1F5144", "#304962", "#794B35", "#4A4965", "#202622"][layout - 1]
     c.setFillColor(HexColor(accent))
@@ -448,22 +523,6 @@ def draw(c, d, page=1):
     if d.get("credit"):
         c.setFont("Helvetica-Bold", 12)
         c.drawString(42, 191, "CREDIT NOTE - request for credit, not a new purchase")
-    if d.get("followup_scope"):
-        c.setFont("Helvetica-Bold", 10)
-        c.drawString(42, 218, "Service / delivery note")
-        c.setFont("Helvetica", 10)
-        c.drawString(42, 199, d["followup_scope"])
-        c.setFont("Helvetica-Bold", 10)
-        c.drawString(
-            42,
-            180,
-            f"Quantity: {d['quantity']}  |  Unit of measure: {d['unit']}  |  "
-            f"Unit price: {d['currency']} {Decimal(d['price']):.2f} per {d['unit']}",
-        )
-        c.setFont("Helvetica", 10)
-        c.drawString(
-            42, 160, "Payment terms: Net 30. Please include the invoice number with queries."
-        )
     c.setFont("Helvetica", 8)
     c.setFillColor(HexColor("#616A64"))
     c.drawString(42, 57, "SYNTHETIC DOCUMENT · FICTIONAL VENDOR · FOR DEMONSTRATION ONLY")

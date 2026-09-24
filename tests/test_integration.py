@@ -452,6 +452,78 @@ def test_ai_provider_failure_keeps_automatic_checks_available(workspace, facts, 
         assert decision.assistant["status"] == "unavailable"
 
 
+@pytest.mark.parametrize("guidance", ["missing", "null", "provided"])
+def test_missing_po_has_a_follow_up_request_even_with_one_candidate(workspace, facts, guidance):
+    record = pending(workspace[0], facts, "2", reference="FW-2204")
+    invoice_id, run_id, token, data, _ = record
+    data.update(
+        vendor_name="Fieldwork Equipment",
+        vendor_identifier="FIELD-003",
+        po_reference=None,
+        po_references=[],
+        subtotal="600.00",
+        total="600.00",
+    )
+    data["lines"][0].update(
+        description="27 inch monitor",
+        sku="MONITOR-27",
+        quantity="2",
+        unit="unit",
+        unit_price="300.00",
+        total="600.00",
+    )
+    pages = pages_and_citations(data)
+    with Session() as db:
+        vendors, orders, _, _ = pipeline.financial_context(db, workspace[0], invoice_id, lock=False)
+    vendor = next(v for v in vendors if v["identifier"] == "FIELD-003")
+    candidates = [p for p in orders if p["vendor_id"] == vendor["id"] and p["status"] == "ACTIVE"]
+    assert len(candidates) == 1
+    assistance = {
+        "status": "ready",
+        "explanation": "The invoice is missing a purchase order reference.",
+        "next_step": "Obtain the supporting assignment.",
+        "sources": [{"kind": "invoice", "page": 1, "quote": "invoice_number: FW-2204"}],
+    }
+    if guidance == "null":
+        assistance.update(question=None, draft_message=None)
+    elif guidance == "provided":
+        assistance.update(
+            question="Can procurement confirm the order assigned to this invoice?",
+            draft_message="Please share the purchase order assignment for FW-2204.",
+        )
+    pipeline.finalize(
+        run_id,
+        token,
+        data,
+        pages,
+        {
+            "model": "isolated-test-double",
+            "assistant": assistance,
+            "assistant_outcome": "NEEDS_REVIEW",
+        },
+    )
+    with Session() as db:
+        decision = db.scalar(select(Decision).where(Decision.run_id == run_id))
+        assert decision.outcome == "NEEDS_REVIEW"
+        assert decision.po_id is None
+        assert not decision.assistant.get("auto_matched")
+        assert db.scalar(select(Commitment.id).where(Commitment.invoice_id == invoice_id)) is None
+        assert decision.assistant["explanation"] == assistance["explanation"]
+        assert decision.assistant["next_step"] == assistance["next_step"]
+        assert decision.assistant["sources"] == assistance["sources"]
+        if guidance == "provided":
+            assert decision.assistant["question"] == assistance["question"]
+            assert decision.assistant["draft_message"] == assistance["draft_message"]
+            assert "draft_origin" not in decision.assistant
+        else:
+            assert decision.assistant["draft_origin"] == "policy_template"
+            for field in ("question", "draft_message"):
+                assert "FW-2204" in decision.assistant[field]
+                assert "FIELD-003" in decision.assistant[field]
+                assert "PO-1103" not in decision.assistant[field]
+            assert "procurement confirmation" in decision.assistant["draft_message"]
+
+
 def test_demo_preview_and_pack_are_session_scoped_read_only(workspace):
     client = client_for(workspace)
     anonymous = TestClient(app)

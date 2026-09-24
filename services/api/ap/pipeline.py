@@ -203,6 +203,34 @@ def finalize(run_id, token, data, pages, metadata):
                 )
                 + result["summary"],
             }
+        # Missing PO evidence needs a usable next step even if the model omits
+        # its optional question or draft. This template never selects an order.
+        if (
+            assistance.get("status") == "ready"
+            and result["outcome"] == "NEEDS_REVIEW"
+            and result["po_id"] is None
+            and not data.get("po_reference")
+            and not data.get("po_references")
+            and data.get("invoice_number")
+            and data.get("vendor_identifier")
+        ):
+            invoice_reference = " ".join(str(data["invoice_number"]).split())[:100]
+            supplier_reference = " ".join(str(data["vendor_identifier"]).split())[:100]
+            if invoice_reference and supplier_reference:
+                fallback = {}
+                if assistance.get("question") is None:
+                    fallback["question"] = (
+                        f"Which purchase order is invoice {invoice_reference} "
+                        f"from supplier {supplier_reference} assigned to?"
+                    )
+                if assistance.get("draft_message") is None:
+                    fallback["draft_message"] = (
+                        "Please provide a procurement confirmation that explicitly assigns "
+                        f"invoice {invoice_reference} from supplier {supplier_reference} "
+                        "to the correct purchase order, including its PO number."
+                    )
+                    fallback["draft_origin"] = "policy_template"
+                assistance = {**assistance, **fallback}
         run.model = metadata["model"]
         run.usage = metadata.get("usage", {})
         revision.extraction = data

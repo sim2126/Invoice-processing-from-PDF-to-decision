@@ -5,6 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 from ap import assistant
+from openai.lib._pydantic import to_strict_json_schema
+from pydantic import ValidationError
 
 
 def context(facts, financial):
@@ -124,3 +126,141 @@ def test_model_citations_must_be_present_in_retrieved_sources(monkeypatch, citat
     else:
         with pytest.raises(ValueError):
             recommend()
+
+
+@pytest.mark.parametrize("candidate_ids", [[], ["po-1"], ["po-1", "po-2"]])
+def test_provider_schema_restricts_ids_to_current_retrieval(monkeypatch, candidate_ids):
+    captured = {}
+    answer = {
+        "explanation": "The invoice needs review.",
+        "next_step": "Confirm its assignment.",
+        "suggested_po_id": candidate_ids[0] if candidate_ids else None,
+        "question": None,
+        "draft_message": None,
+        "citations": [{"source_id": "policy"}],
+    }
+
+    def parse(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            status="completed",
+            output_parsed=kwargs["text_format"].model_validate(answer),
+            model="test",
+            usage=None,
+        )
+
+    monkeypatch.setattr(
+        assistant,
+        "OpenAI",
+        lambda **kwargs: SimpleNamespace(responses=SimpleNamespace(parse=parse)),
+    )
+    result = assistant.recommend(
+        {},
+        {},
+        [
+            {
+                "id": "invoice:1:0",
+                "kind": "invoice",
+                "title": "Invoice source",
+                "text": "Original invoice text",
+            },
+            {"id": "policy", "kind": "policy", "title": "Policy", "text": "Exact policy text"},
+        ],
+        [{"id": value} for value in candidate_ids],
+    )
+    assert result["sources"][0]["quote"] == "Exact policy text"
+    response_format = captured["text_format"]
+    assert issubclass(response_format, assistant.Recommendation)
+    schema = to_strict_json_schema(response_format)
+    assert schema["additionalProperties"] is False
+    assert set(schema["required"]) == set(schema["properties"])
+    citations_schema = schema["properties"]["citations"]
+    quote_schema = schema["$defs"][citations_schema["items"]["$ref"].rsplit("/", 1)[1]]
+    assert quote_schema["additionalProperties"] is False
+    assert quote_schema["required"] == ["source_id"]
+    assert quote_schema["properties"]["source_id"]["enum"] == [
+        "invoice:1:0",
+        "policy",
+        "checks",
+    ]
+    assert citations_schema["minItems"] == 1
+    assert citations_schema["maxItems"] == 8
+    po_schema = schema["properties"]["suggested_po_id"]
+    if candidate_ids:
+        assert {"type": "null"} in po_schema["anyOf"]
+        allowed = next(item for item in po_schema["anyOf"] if item["type"] == "string")
+        assert allowed["enum"] == candidate_ids
+    else:
+        assert po_schema["type"] == "null"
+    for candidate_id in [None, *candidate_ids]:
+        response_format.model_validate({**answer, "suggested_po_id": candidate_id})
+    for source_id in ["invoice:1:0", "policy", "checks"]:
+        response_format.model_validate({**answer, "citations": [{"source_id": source_id}]})
+    with pytest.raises(ValidationError):
+        response_format.model_validate({**answer, "suggested_po_id": "other-workspace-po"})
+    with pytest.raises(ValidationError):
+        response_format.model_validate({**answer, "citations": [{"source_id": "invented"}]})
+    with pytest.raises(ValidationError):
+        response_format.model_validate({**answer, "citations": []})
+
+
+def test_checks_only_schema_has_a_single_source_enum(monkeypatch):
+    def parse(**kwargs):
+        response_format = kwargs["text_format"]
+        schema = to_strict_json_schema(response_format)
+        quote_ref = schema["properties"]["citations"]["items"]["$ref"]
+        quote_schema = schema["$defs"][quote_ref.rsplit("/", 1)[1]]
+        assert quote_schema["properties"]["source_id"]["enum"] == ["checks"]
+        assert "const" not in quote_schema["properties"]["source_id"]
+        return SimpleNamespace(
+            status="completed",
+            output_parsed=response_format.model_validate(
+                {
+                    "explanation": "Review required.",
+                    "next_step": "Obtain the missing document.",
+                    "suggested_po_id": None,
+                    "question": None,
+                    "draft_message": None,
+                    "citations": [{"source_id": "checks"}],
+                }
+            ),
+            model="test",
+            usage=None,
+        )
+
+    monkeypatch.setattr(
+        assistant,
+        "OpenAI",
+        lambda **kwargs: SimpleNamespace(responses=SimpleNamespace(parse=parse)),
+    )
+    result = assistant.recommend({}, {"checks": [{"message": "Missing document"}]}, [], [])
+    assert result["sources"][0]["quote"] == "Missing document"
+
+
+def test_server_still_rejects_unknown_po_from_unconstrained_provider_output(monkeypatch):
+    output = assistant.Recommendation(
+        explanation="Example",
+        next_step="Review",
+        suggested_po_id="other-workspace-po",
+        question=None,
+        draft_message=None,
+        citations=[assistant.SourceQuote(source_id="policy")],
+    )
+    monkeypatch.setattr(
+        assistant,
+        "OpenAI",
+        lambda **kwargs: SimpleNamespace(
+            responses=SimpleNamespace(
+                parse=lambda **kwargs: SimpleNamespace(
+                    status="completed", output_parsed=output, model="test", usage=None
+                )
+            )
+        ),
+    )
+    with pytest.raises(ValueError, match="unknown purchase order"):
+        assistant.recommend(
+            {},
+            {},
+            [{"id": "policy", "kind": "policy", "title": "Policy", "text": "Exact policy text"}],
+            [{"id": "po-1"}],
+        )
