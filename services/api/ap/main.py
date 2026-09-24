@@ -32,6 +32,7 @@ from .db import (
 )
 from .documents import DocumentError, get_value, validate_pdf, value_supported
 from .extraction import ExtractionFailure
+from .followup_examples import router as followup_router
 from .pipeline import consume_quota, event, po_dict, vendor_dict
 from .product import router as product_router
 from .rules import vendor_candidates
@@ -51,6 +52,7 @@ from .seed import seed_workspace
 
 app = FastAPI(title="AP Review Desk", version="0.1.0")
 app.include_router(product_router)
+app.include_router(followup_router)
 
 
 @app.middleware("http")

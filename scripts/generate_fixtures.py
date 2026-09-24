@@ -8,7 +8,7 @@ from pathlib import Path
 import pypdfium2 as pdfium
 from PIL import ImageFilter
 from reportlab.lib.colors import HexColor
-from reportlab.lib.utils import ImageReader
+from reportlab.lib.utils import ImageReader, simpleSplit
 from reportlab.pdfgen import canvas
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -171,6 +171,181 @@ cases = [
 ]
 
 
+# These teaching examples are separate from the fixed, twenty-document
+# extraction/evaluation corpus above. They use the existing company registers.
+followup_cases = [
+    (
+        "21-brand-assignment.pdf",
+        base(
+            "MER-2201",
+            vendor="Meridian Creative",
+            identifier="MERIDIAN-002",
+            po=None,
+            quantity="8",
+            sku="DESIGN-HR",
+            description="Design services",
+            unit="hour",
+            layout=2,
+            expected="NEEDS_REVIEW",
+            followup_scope="Brand guideline refinement and handover assets",
+        ),
+        {
+            "file": "21-brand-assignment-confirmation.pdf",
+            "title": "Project assignment",
+            "subtitle": "Brand studio / September delivery",
+            "author": "Maya Patel",
+            "role": "Brand Operations Manager",
+            "reference": "NS-BRAND-0926-18",
+            "po": "PO-1088",
+            "paragraphs": [
+                "The eight hours cover brand guideline refinement and preparation of the final "
+                "handover assets for the September brand studio project. The work was reviewed "
+                "with the brand team on 18 September 2026.",
+                "The supplier's invoice contains eight hours of DESIGN-HR services at USD "
+                "100.00 per hour, totaling USD 800.00 with no tax. The purchase order field was "
+                "omitted from the supplier's PDF; this record confirms the project allocation.",
+                "Prepared for the accounts payable team by Maya Patel. This record confirms "
+                "the purchase order assignment only. Invoice, supplier, duplicate and "
+                "remaining-budget checks continue to apply before a commitment is accepted.",
+            ],
+        },
+    ),
+    (
+        "22-product-confirmation.pdf",
+        base(
+            "MER-2202",
+            vendor="Meridian Creative",
+            identifier="MERIDIAN-002",
+            po=None,
+            quantity="12",
+            sku="DESIGN-HR",
+            description="Design services",
+            unit="hour",
+            layout=4,
+            expected="NEEDS_REVIEW",
+            followup_scope="Product onboarding screens and interaction specifications",
+        ),
+        {
+            "file": "22-product-buyer-confirmation.pdf",
+            "title": "Buyer confirmation",
+            "subtitle": "Product studio / Design services",
+            "author": "Daniel Brooks",
+            "role": "Product Design Lead",
+            "reference": "NS-PRODUCT-0926-21",
+            "po": "PO-1091",
+            "paragraphs": [
+                "I confirm that the twelve design hours relate to the September product "
+                "studio engagement. The deliverables are onboarding screens and interaction "
+                "specifications reviewed by the product team on 21 September 2026.",
+                "The agreed rate for DESIGN-HR is USD 100.00 per hour. Twelve hours result "
+                "in an invoice value of USD 1,200.00 with no tax. The supplier issued the "
+                "invoice without the purchase order number, so this confirmation supplies "
+                "the missing allocation.",
+                "Recorded by Daniel Brooks for accounts payable. This confirmation identifies "
+                "the existing order; it does not increase its approved value or authorize "
+                "payment. The standard invoice and commitment checks must still pass.",
+            ],
+        },
+    ),
+    (
+        "23-office-delivery.pdf",
+        base(
+            "ALD-2203",
+            po=None,
+            quantity="6",
+            layout=1,
+            expected="NEEDS_REVIEW",
+            followup_scope="Six cases delivered for the September office refresh",
+        ),
+        {
+            "file": "23-office-delivery-confirmation.pdf",
+            "title": "Delivery allocation",
+            "subtitle": "Office refresh / Paper delivery record",
+            "author": "Olivia Chen",
+            "role": "Workplace Coordinator",
+            "reference": "NS-DELIVERY-0926-22",
+            "po": "PO-1038",
+            "paragraphs": [
+                "Six cases of PAPER-A4 copy paper were delivered to Northstar Studio, "
+                "125 Workshop Lane, Portland, on 22 September 2026. Olivia Chen checked "
+                "the delivery against the office refresh requisition and recorded the "
+                "quantity received as six cases.",
+                "The delivery relates to the September office refresh order. The supplier "
+                "invoiced six cases at USD 100.00 per case, totaling USD 600.00 with no tax. "
+                "This record supplies the allocation missing from the invoice PDF.",
+                "This delivery note provides supporting context for the purchase order "
+                "match. Accounts payable still checks the invoice, approved supplier, "
+                "duplicate history, quantities, pricing and remaining order value.",
+            ],
+        },
+    ),
+    (
+        "24-equipment-receipt.pdf",
+        base(
+            "FW-2204",
+            quantity="2",
+            layout=3,
+            expected="NEEDS_REVIEW",
+            followup_scope="Two monitors received for equipment replenishment",
+            **{**fieldwork, "po": None},
+        ),
+        {
+            "file": "24-equipment-receipt-confirmation.pdf",
+            "title": "Equipment receipt",
+            "subtitle": "Equipment replenishment / Receiving confirmation",
+            "author": "Nora Reed",
+            "role": "IT Operations Specialist",
+            "reference": "NS-IT-RECEIPT-0926-23",
+            "po": "PO-1103",
+            "paragraphs": [
+                "Two 27-inch monitors, item MONITOR-27, were received by the IT operations "
+                "team on 23 September 2026. Nora Reed recorded both units for equipment "
+                "replenishment and checked that the shipment matched the requisition.",
+                "The invoice lists two units at USD 300.00 each, totaling USD 600.00 with "
+                "no tax. The supplier did not print the purchase order number on the invoice. "
+                "This receipt confirms the order associated with the received equipment.",
+                "This reference supports the order allocation only. Receipt of equipment "
+                "does not bypass supplier, duplicate, price, quantity or remaining-budget "
+                "checks and does not execute a payment.",
+            ],
+        },
+    ),
+    (
+        "25-budget-shortfall.pdf",
+        base(
+            "ALD-2205",
+            po=None,
+            quantity="45",
+            layout=5,
+            expected="NEEDS_REVIEW",
+            followup_scope="Workspace essentials replenishment, forty-five cases",
+        ),
+        {
+            "file": "25-budget-shortfall-confirmation.pdf",
+            "title": "Procurement confirmation",
+            "subtitle": "Workspace essentials / Allocation with a budget shortfall",
+            "author": "Maya Patel",
+            "role": "Procurement Coordinator",
+            "reference": "NS-PROCUREMENT-0926-24",
+            "po": "PO-1042",
+            "paragraphs": [
+                "The forty-five cases of PAPER-A4 copy paper relate to the workspace "
+                "essentials replenishment request. The invoice uses the agreed USD 100.00 "
+                "per-case price and totals USD 4,500.00 with no tax.",
+                "At the time of this confirmation, the order ceiling is USD 10,000.00 and "
+                "prior accepted commitments total USD 6,000.00. That leaves USD 4,000.00 "
+                "available. This invoice exceeds that remaining amount by USD 500.00; "
+                "45 requested cases also exceed the 40 cases remaining on the order.",
+                "This confirmation identifies the correct order but does not add budget "
+                "or change its quantity. Keep the invoice in review while procurement "
+                "resolves the shortfall through the company's purchasing process. No "
+                "additional spend or payment is authorized by this record.",
+            ],
+        },
+    ),
+]
+
+
 def draw(c, d, page=1):
     layout = d["layout"]
     accent = ["#1F5144", "#304962", "#794B35", "#4A4965", "#202622"][layout - 1]
@@ -273,6 +448,14 @@ def draw(c, d, page=1):
     if d.get("credit"):
         c.setFont("Helvetica-Bold", 12)
         c.drawString(42, 191, "CREDIT NOTE - request for credit, not a new purchase")
+    if d.get("followup_scope"):
+        c.setFont("Helvetica-Bold", 10)
+        c.drawString(42, 218, "Service / delivery note")
+        c.setFont("Helvetica", 10)
+        c.drawString(42, 199, d["followup_scope"])
+        c.drawString(
+            42, 180, "Payment terms: Net 30. Please include the invoice number with queries."
+        )
     c.setFont("Helvetica", 8)
     c.setFillColor(HexColor("#616A64"))
     c.drawString(42, 57, "SYNTHETIC DOCUMENT · FICTIONAL VENDOR · FOR DEMONSTRATION ONLY")
@@ -315,6 +498,67 @@ def generate(filename, d):
             page.close()
 
 
+def generate_followup_reference(invoice, reference):
+    c = canvas.Canvas(str(OUT / reference["file"]), pagesize=(612, 792), invariant=1)
+    c.setTitle(reference["title"])
+    c.setAuthor("Northstar Studio - fictional example")
+    c.setFillColor(HexColor("#092F39"))
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(42, 744, "NORTHSTAR STUDIO")
+    c.setFont("Helvetica", 9)
+    c.drawRightString(570, 744, "PROCUREMENT RECORDS")
+    c.setStrokeColor(HexColor("#D8E2E5"))
+    c.line(42, 726, 570, 726)
+    c.setFont("Helvetica-Bold", 26)
+    c.drawString(42, 684, reference["title"])
+    c.setFillColor(HexColor("#597078"))
+    c.setFont("Helvetica", 11)
+    c.drawString(42, 660, reference["subtitle"])
+    c.setFillColor(HexColor("#092F39"))
+    c.setFont("Helvetica", 10)
+    for y, label, value in [
+        (625, "Recorded by", f"{reference['author']} / {reference['role']}"),
+        (605, "Record date", "24 September 2026"),
+        (585, "Reference", reference["reference"]),
+    ]:
+        c.setFont("Helvetica-Bold", 10)
+        c.drawString(42, y, label)
+        c.setFont("Helvetica", 10)
+        c.drawString(134, y, value)
+    c.line(42, 566, 570, 566)
+    assignment = (
+        f"Invoice {invoice['number']} from supplier {invoice['identifier']} "
+        f"({invoice['vendor']}) is assigned to {reference['po']}."
+    )
+    y = 538
+    for index, paragraph in enumerate([assignment, *reference["paragraphs"]]):
+        font = "Helvetica-Bold" if index == 0 else "Helvetica"
+        c.setFont(font, 11)
+        for line in simpleSplit(paragraph, font, 11, 528):
+            c.drawString(42, y, line)
+            y -= 17
+        y -= 17
+    c.setStrokeColor(HexColor("#D8E2E5"))
+    c.line(42, 84, 570, 84)
+    c.setFillColor(HexColor("#597078"))
+    c.setFont("Helvetica", 8)
+    c.drawString(
+        42, 63, "SYNTHETIC REFERENCE | FICTIONAL PEOPLE AND PROJECT | FOR DEMONSTRATION ONLY"
+    )
+    c.drawRightString(570, 45, "Page 1")
+    c.save()
+    with pdfium.PdfDocument(OUT / reference["file"]) as pdf:
+        page = pdf[0]
+        try:
+            bitmap = page.render(scale=2)
+            image = bitmap.to_pil()
+            image.save(OUT / reference["file"].replace(".pdf", ".preview.png"), format="PNG")
+            image.close()
+            bitmap.close()
+        finally:
+            page.close()
+
+
 def generate_project_reference():
     c = canvas.Canvas(str(OUT / "project-assignment.pdf"), pagesize=(612, 792), invariant=1)
     c.setTitle("Project assignment reference")
@@ -340,6 +584,9 @@ def generate_project_reference():
 if __name__ == "__main__":
     for name, data in cases:
         generate(name, data)
+    for name, data, reference in followup_cases:
+        generate(name, data)
+        generate_followup_reference(data, reference)
     generate_project_reference()
     (ROOT / "fixtures" / "manifest.json").write_text(
         json.dumps(
@@ -348,3 +595,4 @@ if __name__ == "__main__":
         encoding="utf-8",
     )
     print(f"Generated {len(cases)} PDFs, five layouts, five held-out documents.")
+    print(f"Generated {len(followup_cases)} separate invoice and follow-up reference pairs.")

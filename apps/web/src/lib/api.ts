@@ -36,6 +36,20 @@ export type Scenario = {
   file: string;
   expected: string;
 };
+export type FollowUpExample = {
+  id: string;
+  title: string;
+  description: string;
+  file: string;
+  invoice_number: string;
+  vendor: string;
+  amount: string;
+  expected_before: string;
+  expected_after: string;
+  reference_file: string;
+  reference_title: string;
+  resolution: string;
+};
 
 export class ApiError extends Error {
   constructor(

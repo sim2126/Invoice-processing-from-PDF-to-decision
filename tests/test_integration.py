@@ -486,6 +486,224 @@ def test_demo_preview_and_pack_are_session_scoped_read_only(workspace):
         assert db.get(Workspace, workspace[0]).uploads == 0
 
 
+FOLLOW_UP_CASES = [
+    ("brand-assignment", "MER-2201", "MERIDIAN-002", "PO-1088", "8", "800", "APPROVED"),
+    ("product-confirmation", "MER-2202", "MERIDIAN-002", "PO-1091", "12", "1200", "APPROVED"),
+    ("office-delivery", "ALD-2203", "ALDER-001", "PO-1038", "6", "600", "APPROVED"),
+    ("equipment-receipt", "FW-2204", "FIELD-003", "PO-1103", "2", "600", "APPROVED"),
+    ("budget-shortfall", "ALD-2205", "ALDER-001", "PO-1042", "45", "4500", "NEEDS_REVIEW"),
+]
+
+
+def test_follow_up_examples_and_paired_pack_are_protected_and_read_only(workspace):
+    import pdfplumber
+    from ap.db import CompanyDocument
+
+    client, anonymous = client_for(workspace), TestClient(app)
+    routes = ["/follow-up-examples", "/follow-up-examples/pack"]
+    routes += [
+        f"/follow-up-examples/brand-assignment/{part}{suffix}"
+        for part in ("invoice", "reference")
+        for suffix in ("", "/preview")
+    ]
+    for route in routes:
+        assert anonymous.get(route).status_code == 401
+    response = client.get("/follow-up-examples")
+    assert response.status_code == 200
+    samples = response.json()
+    assert {sample["id"] for sample in samples} == {case[0] for case in FOLLOW_UP_CASES}
+    expected_cases = {case[0]: case for case in FOLLOW_UP_CASES}
+    expected_files = {sample[key] for sample in samples for key in ("file", "reference_file")}
+    assert len(expected_files) == 10
+    pack = client.get("/follow-up-examples/pack")
+    assert pack.status_code == 200
+    assert pack.headers["content-type"] == "application/zip"
+    with ZipFile(io.BytesIO(pack.content)) as archive:
+        assert set(archive.namelist()) == expected_files | {"START-HERE.txt"}
+        instructions = archive.read("START-HERE.txt").decode()
+        for sample in samples:
+            _, invoice_number, vendor_id, po_reference, _, _, _ = expected_cases[sample["id"]]
+            assert sample["invoice_number"] == invoice_number
+            assert sample["expected_before"] == "Review required"
+            assert sample["file"] in instructions
+            assert sample["reference_file"] in instructions
+            for part, file_key in (("invoice", "file"), ("reference", "reference_file")):
+                source = Path("fixtures/pdfs") / sample[file_key]
+                route = f"/follow-up-examples/{sample['id']}/{part}"
+                original = client.get(route)
+                assert original.status_code == 200
+                assert original.headers["content-type"] == "application/pdf"
+                assert original.content == source.read_bytes() == archive.read(sample[file_key])
+                with pdfplumber.open(io.BytesIO(original.content)) as pdf:
+                    text = " ".join(page.extract_text() or "" for page in pdf.pages)
+                assert invoice_number in text
+                assert vendor_id in text
+                assert "synthetic" in text.lower()
+                if part == "reference":
+                    assert po_reference in text
+                else:
+                    assert po_reference not in text
+                preview = client.get(f"{route}/preview")
+                assert preview.status_code == 200
+                assert preview.headers["content-type"] == "image/png"
+                assert preview.content.startswith(b"\x89PNG")
+                assert preview.content == source.with_suffix(".preview.png").read_bytes()
+    for part in ("invoice", "reference"):
+        for suffix in ("", "/preview"):
+            assert (
+                client.get(f"/follow-up-examples/not-an-example/{part}{suffix}").status_code == 404
+            )
+    assert client.get("/invoices").json()["invoices"] == []
+    assert client.get("/documents").json() == []
+    with Session() as db:
+        assert db.get(Workspace, workspace[0]).uploads == 0
+        assert not db.scalar(
+            select(CompanyDocument.id).where(CompanyDocument.workspace_id == workspace[0])
+        )
+
+
+@pytest.mark.parametrize(
+    "case_id,invoice_number,vendor_identifier,po_reference,quantity,amount,expected",
+    FOLLOW_UP_CASES,
+    ids=[case[0] for case in FOLLOW_UP_CASES],
+)
+def test_follow_up_evidence_matches_po_but_retains_financial_gates(
+    workspace,
+    facts,
+    case_id,
+    invoice_number,
+    vendor_identifier,
+    po_reference,
+    quantity,
+    amount,
+    expected,
+):
+    from ap import assistant
+    from ap.rules import evaluate
+
+    client = client_for(workspace)
+    record = pending(workspace[0], facts, quantity, reference=invoice_number)
+    invoice_id, run_id, token, data, _ = record
+    with Session() as db:
+        context = pipeline.financial_context(db, workspace[0], invoice_id, lock=False)
+    vendors, orders = context[:2]
+    vendor = next(v for v in vendors if v["identifier"] == vendor_identifier)
+    po = next(p for p in orders if p["reference"] == po_reference)
+    line = po["lines"][0]
+    data.update(
+        vendor_name=vendor["name"],
+        vendor_identifier=vendor_identifier,
+        po_reference=None,
+        po_references=[],
+        subtotal=amount,
+        total=amount,
+    )
+    data["lines"][0].update(
+        description=line["description"],
+        sku=line["sku"],
+        unit=line["unit"],
+        unit_price=line["unit_price"],
+        quantity=quantity,
+        total=amount,
+    )
+    pages = pages_and_citations(data)
+    evidence = pipeline.verify_evidence(data, pages)
+    initial = evaluate(data, evidence, *context, {}, now().date())
+    assert initial["outcome"] == "NEEDS_REVIEW"
+    assert initial["po_id"] is None
+
+    reference = client.get(f"/follow-up-examples/{case_id}/reference")
+    assert reference.status_code == 200
+    uploaded = client.post(
+        "/documents",
+        files={"file": (f"{case_id}-confirmation.pdf", reference.content, "application/pdf")},
+    )
+    assert uploaded.status_code == 201, uploaded.text
+    document_id = uploaded.json()["id"]
+    with Session() as db:
+        sources, _ = assistant.retrieve(db, workspace[0], data, pages, vendors, orders)
+    source = next(
+        s
+        for s in sources
+        if s.get("document_id") == document_id
+        and invoice_number in s["text"]
+        and po_reference in s["text"]
+    )
+    assistance = {
+        "status": "ready",
+        "suggested_po_id": po["id"],
+        "sources": [{k: v for k, v in source.items() if k != "text"} | {"quote": source["text"]}],
+    }
+    pipeline.finalize(
+        run_id,
+        token,
+        data,
+        pages,
+        {
+            "model": "isolated-test-double",
+            "assistant": assistance,
+            "assistant_outcome": initial["outcome"],
+        },
+    )
+    with Session() as db:
+        decision = db.scalar(select(Decision).where(Decision.run_id == run_id))
+        assert decision.assistant["auto_matched"] is True
+        assert decision.po_id == po["id"]
+        assert decision.outcome == expected, decision.checks
+        commitment = db.scalar(select(Commitment).where(Commitment.invoice_id == invoice_id))
+        if expected == "APPROVED":
+            assert commitment.amount == Decimal(amount)
+            assert commitment.quantities == {line["sku"]: quantity}
+        else:
+            assert commitment is None
+            assert decision.comparison["remaining_before"] == "4000.00"
+            assert decision.comparison["shortfall"] == "500.00"
+            checks = {check["code"]: check for check in decision.checks}
+            assert checks["budget"]["state"] == "review"
+            assert checks["quantity_PAPER-A4"]["state"] == "review"
+            assert "45 case billed; 40 remaining" in checks["quantity_PAPER-A4"]["message"]
+
+
+def test_follow_up_reference_cannot_match_another_invoice_from_the_same_supplier(workspace):
+    import pdfplumber
+    from ap import assistant
+
+    client = client_for(workspace)
+    active_documents = {}
+    for case in FOLLOW_UP_CASES:
+        response = client.get(f"/follow-up-examples/{case[0]}/reference")
+        assert response.status_code == 200
+        with pdfplumber.open(io.BytesIO(response.content)) as pdf:
+            active_documents[case[0]] = [
+                {"page": i + 1, "text": page.extract_text() or ""}
+                for i, page in enumerate(pdf.pages)
+            ]
+    with Session() as db:
+        vendors, orders, _, _ = pipeline.financial_context(db, workspace[0], uid(), lock=False)
+    for case_id, invoice_number, vendor_id, po_reference, _, _, _ in FOLLOW_UP_CASES:
+        po = next(p for p in orders if p["reference"] == po_reference)
+        quote = " ".join(page["text"] for page in active_documents[case_id])
+        assistance = {
+            "status": "ready",
+            "suggested_po_id": po["id"],
+            "sources": [{"kind": "document", "document_id": case_id, "quote": quote}],
+        }
+        data = {"invoice_number": invoice_number, "vendor_identifier": vendor_id, "currency": "USD"}
+        assert (
+            assistant.grounded_po(data, {}, assistance, vendors, orders, active_documents)
+            == po["id"]
+        )
+        for other in FOLLOW_UP_CASES:
+            if other[2] == vendor_id and other[1] != invoice_number:
+                wrong_invoice = {**data, "invoice_number": other[1]}
+                assert (
+                    assistant.grounded_po(
+                        wrong_invoice, {}, assistance, vendors, orders, active_documents
+                    )
+                    is None
+                )
+
+
 def test_upload_validation_same_file_and_private_sources(workspace):
     client = client_for(workspace)
     assert (

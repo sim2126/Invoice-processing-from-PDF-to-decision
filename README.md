@@ -59,6 +59,20 @@ Upload a PDF or use the five scenario buttons, which submit real generated PDFs 
 4. **Two possible orders:** initially requires review because both orders are plausible. Open **Documents → Company references → Add example reference**, then return to the invoice and select **Ask AI to review**. AI retrieves the explicit assignment of MER-2081 / MERIDIAN-002 to PO-1088; the server validates that evidence and reruns every check before approval. Alternatively confirm the PO in **Review & resolve**. Both paths preserve history.
 5. **The numbers disagree:** a real scan contains conflicting printed totals; keep it on hold and request a corrected invoice.
 
+For five additional invoice-to-clarification workflows, open **Documents → Follow-up examples**. Each example has a synthetic invoice and a separate supporting PDF, both with eye previews and downloads:
+
+| Invoice | Example | Amount | After adding the supporting document |
+| --- | --- | --- | --- |
+| MER-2201 | Brand project assignment | $800 | Match PO-1088; approve if all checks pass |
+| MER-2202 | Product buyer confirmation | $1,200 | Match PO-1091; approve if all checks pass |
+| ALD-2203 | Office delivery allocation | $600 | Match PO-1038; approve if all checks pass |
+| FW-2204 | Equipment receipt and assignment | $600 | Match PO-1103; approve if all checks pass |
+| ALD-2205 | Procurement confirmation with insufficient budget | $4,500 | Match PO-1042; remain in review with at least a $500 shortfall |
+
+Run an invoice first, inspect the AI question and prepared follow-up draft, then add that example's supporting document. Open the invoice and choose **Ask AI to review**. This creates a new decision with cited evidence while retaining the earlier review. These documents simulate the clarification a buyer or supplier would provide; nothing is emailed automatically. The equipment receipt supplies a PO assignment, not a separate automated goods-receipt validation. Approval still uses two-way matching and current balances.
+
+The follow-up pack downloads all ten PDFs and a walkthrough in one ZIP. These additional cases are separate from **Load example invoices** and the original five sample cases. Previewing and downloading remain read-only; running or adding a document uses the normal invoice/reference upload routes. The original 20-document evaluation corpus is unchanged.
+
 **Settings → General → Start a fresh workspace** creates a separate workspace with the original seed balances. Extraction is probabilistic, so uncertain or unsupported evidence may require review. Failed extraction is an execution failure; unavailable AI assistance is explicitly marked and the exact policy checks remain available.
 
 Approval records an accepted invoice commitment for the next AP step. It does not execute payment or confirm receipt of goods. Scope: fictional companies/suppliers, USD, one invoice/PO per PDF, two-way matching, maximum 10 MB/10 pages by default. Reviewers and AI cannot override hard blockers or increase PO ceilings.

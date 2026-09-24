@@ -15,6 +15,7 @@ import { Button } from "../ui/button";
 import { Dialog, DialogContent } from "../ui/dialog";
 import { ErrorNotice } from "../common";
 import { DemoLibrary } from "../demo-library";
+import { FollowUpExamples } from "../followup-examples";
 import { Pending, PageHeading } from "./shared";
 
 export function Documents({
@@ -52,9 +53,20 @@ export function Documents({
         >
           Sample invoices
         </button>
+        <button
+          aria-pressed={tab === "follow-ups"}
+          onClick={() => setTab("follow-ups")}
+        >
+          Follow-up examples
+        </button>
       </div>
       {tab === "samples" ? (
         <DemoLibrary session={session} onUpload={onUpload} onFresh={onFresh} />
+      ) : tab === "follow-ups" ? (
+        <FollowUpExamples
+          session={session}
+          onReferences={() => setTab("references")}
+        />
       ) : (
         <ReferenceDocuments session={session} />
       )}
