@@ -248,8 +248,25 @@ def grounded_po(data, selections, assistance, vendors, orders, active_documents)
         pages = active_documents[source["document_id"]]
         # Recheck the full evidence, including conflicts outside the model's quote.
         full_text = " ".join(page["text"] for page in pages)
+        # Mere co-occurrence of three identifiers is not an assignment. Require
+        # an affirmative relationship in the same sentence before automating.
+        assignment = any(
+            contains(sentence, data.get("invoice_number"))
+            and contains(sentence, matches[0]["identifier"])
+            and re.search(
+                r"\b(?:is|has been) (?:assigned|allocated|linked) to (?:purchase order )?"
+                + re.escape(normalized(selected["reference"]))
+                + r"(?![\w-])",
+                sentence,
+            )
+            and not re.search(
+                r"\b(?:not|never|revoked|cancelled|canceled|superseded|proposed)\b", sentence
+            )
+            for sentence in re.split(r"[.!?]\s+", normalized(quote))
+        )
         if (
-            normalized(quote) in normalized(full_text)
+            assignment
+            and normalized(quote) in normalized(full_text)
             and contains(quote, data.get("invoice_number"))
             and contains(quote, matches[0]["identifier"])
             and contains(quote, selected["reference"])

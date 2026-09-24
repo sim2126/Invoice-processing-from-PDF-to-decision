@@ -30,6 +30,22 @@ def test_only_explicit_reference_binding_can_auto_match(facts, financial):
 
 
 @pytest.mark.parametrize(
+    "quote",
+    [
+        "Invoice ALD-NEW from supplier ALDER-001 is not assigned to PO-1042.",
+        "Invoice ALD-NEW is from ALDER-001. A different invoice is assigned to PO-1042.",
+    ],
+)
+def test_identifier_mentions_and_negative_assignments_do_not_authorize_a_match(
+    facts, financial, quote
+):
+    data, vendors, orders, result, docs = context(facts, financial)
+    result["sources"][0]["quote"] = quote
+    docs["d1"][0]["text"] = quote
+    assert assistant.grounded_po(data, {}, result, vendors, orders, docs) is None
+
+
+@pytest.mark.parametrize(
     "change",
     [
         "printed",
