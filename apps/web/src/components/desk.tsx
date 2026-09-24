@@ -1,27 +1,92 @@
 "use client";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
-import { api, ApiError, getSession, type Session } from "@/lib/api";
+import { api, ApiError, getSession, type Queue, type Session } from "@/lib/api";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  CheckCheck,
+  Building2,
+  ClipboardList,
   ChevronRight,
   CircleAlert,
   LayoutList,
   LoaderCircle,
   Play,
+  Menu,
+  PanelLeftClose,
+  PanelLeftOpen,
   ScanLine,
   ShieldCheck,
 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
-import { ErrorNotice, Policy } from "./common";
+import { ErrorNotice, Policy, status } from "./common";
+import { DemoLibrary } from "./demo-library";
 import { InvoiceWorkspace } from "./invoice-workspace";
 import { UploadDialog } from "./upload-dialog";
 import { WorkQueue } from "./work-queue";
 
-export function Desk({ invoiceId }: { invoiceId?: string }) {
+type DeskView = "all" | "attention" | "demo";
+
+function Navigation({
+  view,
+  attention,
+  onNavigate,
+}: {
+  view: DeskView;
+  attention: number;
+  onNavigate?: () => void;
+}) {
+  return (
+    <nav aria-label="Main navigation">
+      <Link
+        className={`nav-item ${view === "all" ? "active" : ""}`}
+        href="/"
+        aria-label="Invoices"
+        aria-current={view === "all" ? "page" : undefined}
+        onClick={onNavigate}
+      >
+        <LayoutList size={21} />
+        <span className="nav-label">Invoices</span>
+      </Link>
+      <Link
+        className={`nav-item ${view === "attention" ? "active" : ""}`}
+        href="/attention"
+        aria-label={`Needs attention${attention ? ` (${attention})` : ""}`}
+        aria-current={view === "attention" ? "page" : undefined}
+        onClick={onNavigate}
+      >
+        <ClipboardList size={21} />
+        <span className="nav-label">Needs attention</span>
+        {attention > 0 && <span className="nav-count">{attention}</span>}
+      </Link>
+      <Link
+        className={`nav-item ${view === "demo" ? "active" : ""}`}
+        href="/demo"
+        aria-label="Demo library"
+        aria-current={view === "demo" ? "page" : undefined}
+        onClick={onNavigate}
+      >
+        <Play size={20} />
+        <span className="nav-label">Demo library</span>
+      </Link>
+      <Policy>
+        <button className="nav-item" aria-label="Review policy">
+          <ShieldCheck size={21} />
+          <span className="nav-label">Review policy</span>
+        </button>
+      </Policy>
+    </nav>
+  );
+}
+
+export function Desk({
+  invoiceId,
+  view = "all",
+}: {
+  invoiceId?: string;
+  view?: DeskView;
+}) {
   const router = useRouter();
   const client = useQueryClient();
   const session = useQuery({
@@ -32,6 +97,18 @@ export function Desk({ invoiceId }: { invoiceId?: string }) {
   });
   const [uploadOpen, setUploadOpen] = useState(false);
   const [freshOpen, setFreshOpen] = useState(false);
+  const [collapsed, setCollapsed] = useState(false);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const queue = useQuery({
+    queryKey: ["queue", session.data?.workspace],
+    queryFn: () => api<Queue>("/invoices"),
+    enabled: !!session.data,
+    refetchInterval: 5000,
+  });
+  const attention =
+    queue.data?.invoices.filter((invoice) =>
+      ["NEEDS_REVIEW", "BLOCKED", "FAILED"].includes(status(invoice)),
+    ).length || 0;
   const fresh = useMutation({
     mutationFn: () => api<Session>("/session", { method: "POST" }),
     onSuccess: (data) => {
@@ -43,59 +120,74 @@ export function Desk({ invoiceId }: { invoiceId?: string }) {
     },
   });
   return (
-    <div className="app-shell">
+    <div className={`app-shell ${collapsed ? "sidebar-collapsed" : ""}`}>
       <a className="skip-link" href="#main">
         Skip to main content
       </a>
       <aside className="sidebar">
-        <Link className="brand" href="/" aria-label="AP Review Desk home">
-          <span className="brand-symbol">
-            <ScanLine size={23} />
-          </span>
-          <span>
-            AP Review<span className="brand-sub">DESK</span>
-          </span>
-        </Link>
+        <div className="sidebar-brand-row">
+          <Link className="brand" href="/" aria-label="AP Review Desk home">
+            <span className="brand-symbol">
+              <ScanLine size={23} />
+            </span>
+            <span className="brand-name">
+              AP Review Desk
+              <span className="brand-sub">Invoice operations</span>
+            </span>
+          </Link>
+          <button
+            className="sidebar-toggle icon-button"
+            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            aria-expanded={!collapsed}
+            onClick={() => setCollapsed(!collapsed)}
+          >
+            {collapsed ? (
+              <PanelLeftOpen size={18} />
+            ) : (
+              <PanelLeftClose size={18} />
+            )}
+          </button>
+        </div>
         <div className="workspace-label">WORKSPACE</div>
-        <nav aria-label="Main navigation">
-          <Link className="nav-item active" href="/">
-            <LayoutList size={18} /> Work queue <span className="nav-dot" />
-          </Link>
-          <Link className="nav-item" href="/#scenarios">
-            <Play size={17} /> Demo scenarios
-          </Link>
-          <Policy>
-            <button className="nav-item">
-              <ShieldCheck size={18} /> Review policy
-            </button>
-          </Policy>
-        </nav>
-        <div className="sidebar-note">
-          <span className="small-mark">
-            <CheckCheck size={19} />
-          </span>
-          <p>
-            Every invoice,
-            <br />
-            <strong>a clear next step.</strong>
-          </p>
-          <span>Evidence-led accounts payable.</span>
+        <Navigation view={view} attention={attention} />
+        <div className="sidebar-context">
+          <ShieldCheck size={18} />
+          <div>
+            <strong>Every invoice, a clear next step.</strong>
+            <p>Evidence, checks and review history in one place.</p>
+          </div>
         </div>
         <div className="sidebar-bottom">
-          <div className="company-avatar">N</div>
-          <div>
+          <div className="company-avatar">NS</div>
+          <div className="company-details">
             <strong>Northstar Studio</strong>
-            <span>Fictional company</span>
+            <span>Demo workspace · USD</span>
           </div>
-          <span className="company-dot" />
         </div>
       </aside>
       <div className="app-body">
         <header className="topbar">
+          <button
+            className="mobile-menu-button icon-button"
+            aria-label="Open navigation"
+            onClick={() => setMobileNavOpen(true)}
+          >
+            <Menu size={23} />
+          </button>
           <div className="breadcrumb">
-            <span>Operations</span>
+            <Building2 size={16} />
+            <span>Northstar Studio</span>
             <ChevronRight size={13} />
-            <strong>Accounts payable</strong>
+            <strong>
+              {invoiceId
+                ? "Invoice review"
+                : view === "demo"
+                  ? "Demo library"
+                  : view === "attention"
+                    ? "Needs attention"
+                    : "Invoices"}
+            </strong>
           </div>
           <div className="topbar-right">
             <span className="demo-pill">
@@ -106,7 +198,7 @@ export function Desk({ invoiceId }: { invoiceId?: string }) {
               aria-label="Start a fresh demo workspace"
               onClick={() => setFreshOpen(true)}
             >
-              PK
+              NS
             </button>
           </div>
         </header>
@@ -143,8 +235,16 @@ export function Desk({ invoiceId }: { invoiceId?: string }) {
                 )}
                 {invoiceId ? (
                   <InvoiceWorkspace id={invoiceId} session={session.data} />
+                ) : view === "demo" ? (
+                  <DemoLibrary
+                    session={session.data}
+                    onUpload={() => setUploadOpen(true)}
+                    onFresh={() => setFreshOpen(true)}
+                  />
                 ) : (
                   <WorkQueue
+                    key={view}
+                    attentionOnly={view === "attention"}
                     session={session.data}
                     onUpload={() => setUploadOpen(true)}
                     onFresh={() => setFreshOpen(true)}
@@ -160,6 +260,19 @@ export function Desk({ invoiceId }: { invoiceId?: string }) {
           )}
         </main>
       </div>
+      <Dialog open={mobileNavOpen} onOpenChange={setMobileNavOpen}>
+        <DialogContent
+          className="navigation-dialog"
+          title="AP Review Desk"
+          description="Northstar Studio · Demo workspace"
+        >
+          <Navigation
+            view={view}
+            attention={attention}
+            onNavigate={() => setMobileNavOpen(false)}
+          />
+        </DialogContent>
+      </Dialog>
       <Dialog open={freshOpen} onOpenChange={setFreshOpen}>
         <DialogContent
           title="Start with a clean desk"

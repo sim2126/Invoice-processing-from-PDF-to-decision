@@ -33,7 +33,7 @@ async function accessibility(page: Page, name: string) {
     .toEqual([]);
 }
 async function launch(page: Page, name: string) {
-  await page.goto("/");
+  await page.goto("/demo");
   if (name === "A clean match") {
     await page
       .getByRole("button", { name: `Preview ${name} PDF`, exact: true })
@@ -60,7 +60,7 @@ test("queue, file validation, keyboard, fresh session and narrow screen", async 
 }) => {
   await page.goto("/");
   await expect(
-    page.getByRole("heading", { name: "Invoice queue." }),
+    page.getByRole("heading", { name: "Invoices", exact: true }),
   ).toBeVisible();
   await page
     .getByRole("button", { name: "Upload invoice", exact: true })
@@ -81,6 +81,21 @@ test("queue, file validation, keyboard, fresh session and narrow screen", async 
   ).toBeFocused();
   await capture(page, "queue-empty-1440");
   await accessibility(page, "queue");
+  await page
+    .getByRole("button", { name: "Collapse sidebar", exact: true })
+    .click();
+  await expect(
+    page.getByRole("button", { name: "Expand sidebar", exact: true }),
+  ).toBeVisible();
+  await page
+    .getByRole("button", { name: "Expand sidebar", exact: true })
+    .click();
+  await page.getByRole("link", { name: /^Needs attention/ }).click();
+  await expect(page).toHaveURL(/\/attention$/);
+  await expect(
+    page.getByRole("heading", { name: "You’re all caught up" }),
+  ).toBeVisible();
+  await page.getByRole("link", { name: "Invoices", exact: true }).click();
   await page.emulateMedia({ reducedMotion: "reduce" });
   expect(
     await page
@@ -97,6 +112,29 @@ test("queue, file validation, keyboard, fresh session and narrow screen", async 
     ),
   ).toBeTruthy();
   await page
+    .getByRole("button", { name: "Open navigation", exact: true })
+    .click();
+  await page
+    .getByRole("dialog")
+    .getByRole("link", { name: "Demo library", exact: true })
+    .click();
+  await expect(page).toHaveURL(/\/demo$/);
+  await expect(
+    page.getByRole("heading", { name: "Demo library", exact: true }),
+  ).toBeVisible();
+  await page.reload();
+  await page
+    .getByRole("button", { name: "Open navigation", exact: true })
+    .click();
+  await page
+    .getByRole("dialog")
+    .getByRole("link", { name: "Invoices", exact: true })
+    .click();
+  await expect(page).toHaveURL(/\/$/);
+  await expect(
+    page.getByRole("heading", { name: "Invoices", exact: true }),
+  ).toBeVisible();
+  await page
     .getByRole("button", { name: "Start fresh demo", exact: true })
     .click();
   await page
@@ -111,9 +149,11 @@ test("queue, file validation, keyboard, fresh session and narrow screen", async 
 test("built-in samples: previews, downloads, retry, keyboard and mobile without submission", async ({
   page,
 }) => {
-  await page.goto("/#scenarios");
+  await page.goto("/demo");
   const previews = page.getByRole("button", { name: /^Preview .+ PDF$/ });
   await expect(previews).toHaveCount(5);
+  await capture(page, "demo-library-1440");
+  await accessibility(page, "demo-library");
   for (const preview of await previews.all()) {
     await preview.click();
     const original = page.getByRole("img", {
@@ -171,6 +211,7 @@ test("built-in samples: previews, downloads, retry, keyboard and mobile without 
     (await fs.readFile((await pack.path())!)).subarray(0, 2).toString(),
   ).toBe("PK");
   await page.setViewportSize({ width: 390, height: 844 });
+  await capture(page, "demo-library-mobile");
   await previews.last().click();
   await expect
     .poll(() =>
@@ -179,13 +220,16 @@ test("built-in samples: previews, downloads, retry, keyboard and mobile without 
         .evaluate((node) => (node as HTMLImageElement).naturalWidth),
     )
     .toBeGreaterThan(600);
-  await page.screenshot({ path: path.join(shots, "sample-preview-mobile.png") });
+  await page.screenshot({
+    path: path.join(shots, "sample-preview-mobile.png"),
+  });
   expect(
     await page.evaluate(
       () => document.documentElement.scrollWidth <= innerWidth,
     ),
   ).toBeTruthy();
   await page.getByRole("button", { name: "Close dialog", exact: true }).click();
+  await page.goto("/");
   await expect(
     page.getByText("0 of 0 invoices", { exact: true }),
   ).toBeVisible();
@@ -294,6 +338,34 @@ test("live PDFs: happy path, four exceptions, correction loop, evidence, SSE, re
     page.getByText("1 of 5 invoices", { exact: true }),
   ).toBeVisible();
   await page.getByRole("textbox", { name: "Search invoices" }).fill("");
+  await page.getByRole("link", { name: /^Needs attention/ }).click();
+  await expect(
+    page.getByRole("heading", { name: "Needs attention", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("3 of 5 invoices", { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByText("MER-2081", { exact: true })).not.toBeVisible();
+  await capture(page, "attention-populated-1440");
+  await accessibility(page, "attention");
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBeTruthy();
+  await capture(page, "attention-populated-mobile");
+  await page.goto("/");
+  await expect(
+    page.getByText("5 of 5 invoices", { exact: true }),
+  ).toBeVisible();
+  await capture(page, "queue-populated-mobile");
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBeTruthy();
+  await page.setViewportSize({ width: 1440, height: 900 });
   await page
     .context()
     .storageState({ path: path.join(root, ".local", "browser-session.json") });

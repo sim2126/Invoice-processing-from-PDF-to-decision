@@ -45,7 +45,9 @@ Adding `-v` to `down` deletes this project's persistent volumes. The database/st
 
 ## Try the workflow
 
-Open the [hosted demo](https://inv-pdf.up.railway.app) and choose **Demo scenarios**. No dataset setup is needed: each browser workspace starts with fictional vendors, purchase orders and prior accepted balances.
+Open the [hosted demo](https://inv-pdf.up.railway.app) and choose **Demo library**. No dataset setup is needed: each browser workspace starts with fictional vendors, purchase orders and prior accepted balances.
+
+Use **Invoices** for the full queue and **Needs attention** for unresolved reviews, blocked invoices and failed runs. Search, status filters and sorting work in both views.
 
 Each of the five sample cards has an **eye icon** to preview the actual PDF, zoom controls, a download icon, and **Run** to submit it. Previewing does not create an invoice or use the extraction model. **Download demo pack (5 PDFs)** provides all five originals plus a short testing guide in a ZIP, useful for sharing or testing the normal upload path.
 

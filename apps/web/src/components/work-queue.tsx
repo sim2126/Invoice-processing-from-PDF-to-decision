@@ -1,63 +1,42 @@
 "use client";
 import { Button } from "@/components/ui/button";
-import {
-  amount,
-  api,
-  stamp,
-  type Queue,
-  type Scenario,
-  type Session,
-  type UploadResult,
-} from "@/lib/api";
+import { amount, api, stamp, type Queue, type Session } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import {
-  ArrowDownToLine,
   ArrowRight,
   CheckCheck,
-  ChevronRight,
   CircleAlert,
   Clock3,
-  Copy,
-  Eye,
   FileCheck2,
-  FileSearch,
   FileText,
   Inbox,
   LoaderCircle,
-  Play,
   Plus,
   RotateCcw,
-  ScanLine,
   Search,
   ShieldCheck,
   SlidersHorizontal,
 } from "lucide-react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { Badge, ErrorNotice, Metric, Policy, status } from "./common";
-import { ScenarioPreview } from "./scenario-preview";
 
 export function WorkQueue({
   session,
   onUpload,
   onFresh,
+  attentionOnly = false,
 }: {
   session: Session;
+  attentionOnly?: boolean;
   onUpload: () => void;
   onFresh: () => void;
 }) {
-  const router = useRouter();
-  const client = useQueryClient();
   const query = useQuery({
     queryKey: ["queue", session.workspace],
     queryFn: () => api<Queue>("/invoices"),
     refetchInterval: 5000,
-  });
-  const scenarios = useQuery({
-    queryKey: ["scenarios"],
-    queryFn: () => api<Scenario[]>("/scenarios"),
   });
   const [search, setSearch] = useState("");
   const searchInput = useRef<HTMLInputElement>(null);
@@ -75,34 +54,18 @@ export function WorkQueue({
     window.addEventListener("keydown", shortcut);
     return () => window.removeEventListener("keydown", shortcut);
   }, []);
-  const [filter, setFilter] = useState("ALL");
+  const [filter, setFilter] = useState(attentionOnly ? "ATTENTION" : "ALL");
   const [sort, setSort] = useState("newest");
-  const [preview, setPreview] = useState<Scenario | null>(null);
-  const launch = useMutation({
-    mutationFn: async (scenario: Scenario) => {
-      const response = await fetch(`/api/scenarios/${scenario.id}/pdf`);
-      if (!response.ok)
-        throw new Error(
-          "The sample document could not be downloaded. Refresh your session and try again.",
-        );
-      const body = new FormData();
-      body.append("file", await response.blob(), scenario.file);
-      return api<UploadResult>("/invoices", {
-        method: "POST",
-        headers: { "X-CSRF-Token": session.csrf },
-        body,
-      });
-    },
-    onSuccess: async (data) => {
-      await client.invalidateQueries({ queryKey: ["queue"] });
-      router.push(`/invoices/${data.id}`);
-    },
-  });
   const all = query.data?.invoices || [];
+  const caughtUp =
+    attentionOnly &&
+    !all.some((i) => ["NEEDS_REVIEW", "BLOCKED", "FAILED"].includes(status(i)));
   const rows = all
     .filter(
       (i) =>
         (filter === "ALL" ||
+          (filter === "ATTENTION" &&
+            ["NEEDS_REVIEW", "BLOCKED", "FAILED"].includes(status(i))) ||
           status(i) === filter ||
           (filter === "PROCESSING" &&
             ["RUNNING", "QUEUED"].includes(status(i)))) &&
@@ -122,80 +85,105 @@ export function WorkQueue({
     <div className="queue-page">
       <div className="page-heading">
         <div>
-          <div className="eyebrow">ACCOUNTS PAYABLE</div>
-          <h1>
-            Invoice queue<span className="heading-dot">.</span>
-          </h1>
-          <p>A clear view of what’s ready, and what needs a closer look.</p>
+          <h1>{attentionOnly ? "Needs attention" : "Invoices"}</h1>
+          <p>
+            {attentionOnly
+              ? "Resolve exceptions, confirm details, and get invoices moving."
+              : "Every invoice, its evidence, and a clear next step."}
+          </p>
         </div>
         <Button onClick={onUpload}>
           <Plus size={18} /> Upload invoice
         </Button>
       </div>
-      <section className="metrics" aria-label="Session metrics">
-        <Metric
-          label="Invoices processed"
-          value={String(metrics?.processed ?? "—")}
-          detail={`${metrics?.uploaded ?? 0} uploaded this session`}
-          icon={<FileCheck2 size={18} />}
-        />
-        <Metric
-          label="Needs your review"
-          value={String(metrics?.review ?? "—")}
-          detail={
-            metrics?.review_rate == null
-              ? "No completed invoices yet"
-              : `${metrics.review_rate}% of completed invoices`
-          }
-          icon={<CircleAlert size={18} />}
-        />
-        <Metric
-          label="Automatically approved"
-          value={metrics?.auto_rate == null ? "—" : `${metrics.auto_rate}%`}
-          detail={`${metrics?.auto_approved ?? 0} approved without human changes`}
-          icon={<CheckCheck size={18} />}
-        />
-        <Metric
-          label="Median processing time"
-          value={
-            metrics?.median_seconds == null ? "—" : `${metrics.median_seconds}s`
-          }
-          detail={`${metrics?.duration_samples ?? 0} completed · ${metrics?.failed ?? 0} failed`}
-          icon={<Clock3 size={18} />}
-        />
-      </section>
-      <div className="scope-note">
-        <span className="tiny-dot" />
-        Current demo session · Unique invoices · Seeded history excluded
-      </div>
+      {!attentionOnly && (
+        <>
+          <section className="metrics" aria-label="Session metrics">
+            <Metric
+              label="Invoices processed"
+              value={String(metrics?.processed ?? "—")}
+              detail={`${metrics?.uploaded ?? 0} uploaded this session`}
+              icon={<FileCheck2 size={18} />}
+            />
+            <Metric
+              tone="review"
+              label="Needs your review"
+              value={String(metrics?.review ?? "—")}
+              detail={
+                metrics?.review_rate == null
+                  ? "No completed invoices yet"
+                  : `${metrics.review_rate}% of completed invoices`
+              }
+              icon={<CircleAlert size={18} />}
+            />
+            <Metric
+              tone="approved"
+              label="Automatically approved"
+              value={metrics?.auto_rate == null ? "—" : `${metrics.auto_rate}%`}
+              detail={`${metrics?.auto_approved ?? 0} approved without human changes`}
+              icon={<CheckCheck size={18} />}
+            />
+            <Metric
+              label="Median processing time"
+              value={
+                metrics?.median_seconds == null
+                  ? "—"
+                  : `${metrics.median_seconds}s`
+              }
+              detail={`${metrics?.duration_samples ?? 0} completed · ${metrics?.failed ?? 0} failed`}
+              icon={<Clock3 size={18} />}
+            />
+          </section>
+          <div className="scope-note">
+            <span className="tiny-dot" />
+            Current demo session · Unique invoices · Seeded history excluded
+          </div>
+        </>
+      )}
       <section className="queue-surface" aria-label="Invoice work queue">
         <div
           className="table-tabs"
           role="group"
           aria-label="Filter invoice status"
         >
-          {[
-            ["ALL", "All invoices"],
-            ["NEEDS_REVIEW", "Needs review"],
-            ["APPROVED", "Approved"],
-            ["BLOCKED", "Blocked"],
-            ["PROCESSING", "Processing"],
-            ["FAILED", "Failed"],
-          ].map(([key, label]) => (
+          {(attentionOnly
+            ? [
+                ["ATTENTION", "Needs action"],
+                ["NEEDS_REVIEW", "Needs review"],
+                ["BLOCKED", "Blocked"],
+                ["FAILED", "Failed"],
+              ]
+            : [
+                ["ALL", "All invoices"],
+                ["NEEDS_REVIEW", "Needs review"],
+                ["APPROVED", "Approved"],
+                ["BLOCKED", "Blocked"],
+                ["PROCESSING", "Processing"],
+                ["FAILED", "Failed"],
+              ]
+          ).map(([key, label]) => (
             <button
               key={key}
               aria-pressed={filter === key}
               onClick={() => setFilter(key)}
-              className={cn("table-tab", filter === key && "selected")}
+              className={cn(
+                "table-tab",
+                `filter-${key.toLowerCase()}`,
+                filter === key && "selected",
+              )}
             >
               {label}
               <span>
                 {key === "ALL"
                   ? all.length
                   : all.filter((i) =>
-                      key === "PROCESSING"
-                        ? ["QUEUED", "RUNNING"].includes(status(i))
-                        : status(i) === key,
+                      key === "ATTENTION"
+                        ? ["NEEDS_REVIEW", "BLOCKED", "FAILED"].includes(
+                            status(i),
+                          )
+                        : key === "PROCESSING"
+                          ? ["QUEUED", "RUNNING"].includes(status(i))
+                          : status(i) === key,
                     ).length}
               </span>
             </button>
@@ -232,58 +220,54 @@ export function WorkQueue({
           <table className="invoice-table">
             <thead>
               <tr>
+                <th>Status</th>
                 <th>Invoice / vendor</th>
                 <th className="amount-cell">Amount</th>
                 <th>Purchase order</th>
-                <th>Status</th>
                 <th>Next step</th>
-                <th>Received</th>
                 <th>
-                  <span className="sr-only">Open</span>
+                  <span className="sr-only">Open invoice</span>
                 </th>
               </tr>
             </thead>
             <tbody>
               {rows.map((i) => (
                 <tr key={i.id}>
-                  <td>
-                    <Link className="invoice-link" href={`/invoices/${i.id}`}>
-                      <span className="file-cell">
-                        <FileText size={18} />
-                      </span>
-                      <span>
-                        <strong>{i.reference || i.filename}</strong>
-                        <small>{i.vendor || "Reading document…"}</small>
-                      </span>
-                    </Link>
+                  <td data-label="Status">
+                    <Badge state={status(i)} />
                   </td>
-                  <td className="amount-cell">
+                  <td className="invoice-identity" data-label="Invoice">
+                    <Link className="invoice-link" href={`/invoices/${i.id}`}>
+                      <strong>{i.reference || i.filename}</strong>
+                      <small>{i.vendor || "Reading document…"}</small>
+                    </Link>
+                    <time className="received-time" dateTime={i.created_at}>
+                      {stamp(i.created_at)}
+                    </time>
+                  </td>
+                  <td className="amount-cell" data-label="Amount">
                     <strong>{amount(i.total, i.currency || "USD")}</strong>
                     <small>{i.currency || "—"}</small>
                   </td>
-                  <td>
+                  <td className="po-cell" data-label="Purchase order">
                     <span className="po-tag">
                       {i.po_reference || "Not matched"}
                     </span>
                   </td>
-                  <td>
-                    <Badge state={status(i)} />
-                  </td>
-                  <td className="reason-cell">
+                  <td className="reason-cell" data-label="Next step">
                     <span title={i.summary}>
                       {i.outcome === "APPROVED" && i.execution === "COMPLETED"
                         ? "Ready for the next AP step"
                         : i.summary}
                     </span>
                   </td>
-                  <td className="received-cell">{stamp(i.created_at)}</td>
-                  <td>
+                  <td className="open-cell">
                     <Link
                       className="row-arrow"
                       href={`/invoices/${i.id}`}
                       aria-label={`Review ${i.reference || i.filename}`}
                     >
-                      <ChevronRight size={17} />
+                      <ArrowRight size={18} />
                     </Link>
                   </td>
                 </tr>
@@ -303,29 +287,44 @@ export function WorkQueue({
                 <Inbox size={31} />
               </span>
               <h2>
-                {all.length
-                  ? "No invoices match this view"
-                  : "Your next clear decision starts here"}
+                {caughtUp
+                  ? "You’re all caught up"
+                  : all.length
+                    ? "No invoices match this view"
+                    : "Your next clear decision starts here"}
               </h2>
               <p>
-                {all.length
-                  ? "Try another status or search term."
-                  : "Upload an invoice, or try a scenario below. We’ll read the document, check the purchase order, and show the next step."}
+                {caughtUp
+                  ? "Invoices that need a decision or a retry will appear here."
+                  : all.length
+                    ? "Try another status or search term."
+                    : "Upload an invoice, or explore the demo library. We’ll read the document, check the purchase order, and show the next step."}
               </p>
-              <Button
-                variant="outline"
-                onClick={
-                  all.length
-                    ? () => {
-                        setFilter("ALL");
-                        setSearch("");
-                      }
-                    : onUpload
-                }
-              >
-                {all.length ? "Clear filters" : "Upload your first invoice"}
-                <ArrowRight size={15} />
-              </Button>
+              {caughtUp && all.length > 0 ? (
+                <Link className="button button-outline" href="/">
+                  View all invoices <ArrowRight size={15} />
+                </Link>
+              ) : (
+                <Button
+                  variant="outline"
+                  onClick={
+                    all.length
+                      ? () => {
+                          setFilter(attentionOnly ? "ATTENTION" : "ALL");
+                          setSearch("");
+                        }
+                      : onUpload
+                  }
+                >
+                  {all.length ? "Clear filters" : "Upload your first invoice"}
+                  <ArrowRight size={15} />
+                </Button>
+              )}
+              {!all.length && (
+                <Link className="empty-library-link" href="/demo">
+                  Explore demo library <ArrowRight size={15} />
+                </Link>
+              )}
             </div>
           )
         )}
@@ -339,98 +338,31 @@ export function WorkQueue({
           </span>
         </div>
       </section>
-      <section className="scenarios" id="scenarios">
-        <div className="section-heading">
-          <div>
-            <span className="eyebrow">TAKE THE WORKFLOW FOR A SPIN</span>
-            <h2>Real PDFs. Deliberate exceptions.</h2>
-          </div>
-          <button className="text-button" onClick={onFresh}>
-            <RotateCcw size={14} />
-            Start fresh demo
-          </button>
+      <section
+        className="demo-callout"
+        id="scenarios"
+        aria-label="Try the demo"
+      >
+        <span className="demo-callout-icon">
+          <FileText size={22} />
+        </span>
+        <div>
+          <h2>See how a clear decision gets made</h2>
+          <p>
+            Five built-in PDFs, from a clean match to the exceptions that
+            matter.
+          </p>
         </div>
-        <p className="scenario-intro">
-          Five built-in PDFs, ready to preview or run. Vendors, purchase orders
-          and prior balances are already set up in your private demo workspace.
-        </p>
-        <div className="scenario-guide">
-          <span>
-            Use the eye icon to inspect a PDF. Run the clean match before the
-            duplicate.
-          </span>
-          <a className="text-button" href="/api/scenarios/pack" download>
-            <ArrowDownToLine size={15} /> Download demo pack (5 PDFs)
-          </a>
-        </div>
-        <ErrorNotice error={launch.error || scenarios.error} />
-        <div className="scenario-grid">
-          {scenarios.data?.map((s, index) => {
-            const Icon =
-              [FileCheck2, Copy, CircleAlert, FileSearch, ScanLine][index] ||
-              FileText;
-            return (
-              <article className="scenario-card" key={s.id}>
-                <div className="scenario-top">
-                  <span className={`scenario-symbol scenario-${index}`}>
-                    <Icon size={19} />
-                  </span>
-                  <span className="scenario-number">0{index + 1}</span>
-                </div>
-                <h3>{s.title}</h3>
-                <p>{s.description}</p>
-                <span className="expected">{s.expected}</span>
-                <div className="scenario-actions">
-                  <button
-                    onClick={() => launch.mutate(s)}
-                    disabled={launch.isPending}
-                    aria-label={`Run ${s.title}`}
-                  >
-                    {launch.isPending && launch.variables?.id === s.id ? (
-                      <LoaderCircle className="spin" size={14} />
-                    ) : (
-                      <Play size={13} />
-                    )}
-                    Run
-                  </button>
-                  <button
-                    className="scenario-preview-button"
-                    disabled={launch.isPending}
-                    onClick={() => {
-                      launch.reset();
-                      setPreview(s);
-                    }}
-                    aria-label={`Preview ${s.title} PDF`}
-                    title={`Preview ${s.title} PDF`}
-                  >
-                    <Eye size={16} />
-                  </button>
-                  <a
-                    href={`/api/scenarios/${s.id}/pdf`}
-                    download
-                    aria-label={`Download ${s.title} PDF`}
-                    title={`Download ${s.title} PDF`}
-                  >
-                    <ArrowDownToLine size={16} />
-                  </a>
-                </div>
-              </article>
-            );
-          })}
-        </div>
+        <Link className="button button-outline" href="/demo">
+          Demo library <ArrowRight size={17} />
+        </Link>
+        <button className="text-button fresh-demo-link" onClick={onFresh}>
+          <RotateCcw size={15} />
+          Start fresh demo
+        </button>
       </section>
-      {preview && (
-        <ScenarioPreview
-          key={preview.id}
-          scenario={preview}
-          onClose={() => setPreview(null)}
-          onRun={() => launch.mutate(preview)}
-          pending={launch.isPending}
-          error={launch.error}
-        />
-      )}
       <footer className="page-footer">
-        <span>Designed for a considered decision.</span>
+        <span>Original evidence. Every decision recorded.</span>
         <Policy />
         <span>Two-way matching · USD</span>
       </footer>

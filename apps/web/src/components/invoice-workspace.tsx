@@ -112,7 +112,7 @@ export function InvoiceWorkspace({
       <div className="workspace-page">
         <Link className="back-link" href="/">
           <ArrowLeft size={16} />
-          Work queue
+          Invoices
         </Link>
         <ErrorNotice error={query.error} />
         <Button variant="outline" onClick={() => query.refetch()}>
@@ -388,6 +388,21 @@ export function InvoiceWorkspace({
               {inv.revision}.
             </div>
           )}
+          {data.extraction && !active && inv.outcome !== "APPROVED" && (
+            <div className="review-bottom">
+              <div>
+                <strong>Resolve with evidence</strong>
+                <span>
+                  Record a correction or confirm a match. All checks run again.
+                </span>
+              </div>
+              <Button onClick={() => setReviewOpen(true)}>
+                <FileSearch size={16} />
+                Review & resolve
+                <ArrowRight size={15} />
+              </Button>
+            </div>
+          )}
           <RunTimeline data={data} />
           <Tabs.Root defaultValue="checks" className="review-tabs">
             <Tabs.List className="detail-tabs" aria-label="Invoice details">
@@ -564,21 +579,6 @@ export function InvoiceWorkspace({
               ))}
             </Tabs.Content>
           </Tabs.Root>
-          {data.extraction && !active && inv.outcome !== "APPROVED" && (
-            <div className="review-bottom">
-              <div>
-                <strong>Resolve with evidence</strong>
-                <span>
-                  Record a correction or confirm a match. All checks run again.
-                </span>
-              </div>
-              <Button onClick={() => setReviewOpen(true)}>
-                <FileSearch size={16} />
-                Review & resolve
-                <ArrowRight size={15} />
-              </Button>
-            </div>
-          )}
           {inv.outcome === "APPROVED" && (
             <div className="resolved-state">
               <CheckCheck size={17} />

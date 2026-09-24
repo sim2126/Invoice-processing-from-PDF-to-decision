@@ -755,7 +755,7 @@ def scenario_file(scenario_id: str):
 def sample_pack(workspace=Depends(session)):
     instructions = (
         "AP Review Desk - synthetic demo pack\n\n"
-        "Open the review desk and choose Demo scenarios. All five PDFs are built in.\n"
+        "Open the review desk and choose Demo library. All five PDFs are built in.\n"
         "Use the eye icon to preview a PDF, Run scenario to process it, or Upload invoice\n"
         "to upload a file from this pack. Both routes use real PDF extraction and checks.\n"
         "Start fresh demo restores the original fictional vendor and PO balances.\n"

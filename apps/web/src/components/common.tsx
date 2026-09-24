@@ -127,14 +127,16 @@ export function Metric({
   value,
   detail,
   icon,
+  tone = "neutral",
 }: {
   label: string;
   value: string;
   detail: string;
   icon: React.ReactNode;
+  tone?: "neutral" | "review" | "approved";
 }) {
   return (
-    <div className="metric">
+    <div className={`metric metric-${tone}`}>
       <div className="metric-label">
         {label}
         {icon}
