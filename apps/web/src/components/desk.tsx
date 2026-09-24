@@ -190,9 +190,6 @@ export function Desk({
             </strong>
           </div>
           <div className="topbar-right">
-            <span className="demo-pill">
-              <span /> Synthetic demo workspace
-            </span>
             <button
               className="session-avatar"
               aria-label="Start a fresh demo workspace"
