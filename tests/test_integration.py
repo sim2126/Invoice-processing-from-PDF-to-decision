@@ -633,6 +633,10 @@ def test_follow_up_evidence_matches_po_but_retains_financial_gates(
         "status": "ready",
         "suggested_po_id": po["id"],
         "sources": [{k: v for k, v in source.items() if k != "text"} | {"quote": source["text"]}],
+        "explanation": "The invoice should be matched and approved.",
+        "next_step": "Approve this invoice after matching the order.",
+        "question": "Which purchase order should be used?",
+        "draft_message": "Please confirm the order so this invoice can be approved.",
     }
     pipeline.finalize(
         run_id,
@@ -650,11 +654,21 @@ def test_follow_up_evidence_matches_po_but_retains_financial_gates(
         assert decision.assistant["auto_matched"] is True
         assert decision.po_id == po["id"]
         assert decision.outcome == expected, decision.checks
+        assert decision.assistant["explanation"] == (
+            "A supported purchase-order match was applied. " + decision.summary
+        )
+        assert decision.assistant["next_step"] == decision.next_action
+        assert decision.assistant["question"] is None
+        assert decision.assistant["draft_message"] is None
+        assert decision.assistant["sources"] == assistance["sources"]
         commitment = db.scalar(select(Commitment).where(Commitment.invoice_id == invoice_id))
         if expected == "APPROVED":
             assert commitment.amount == Decimal(amount)
             assert commitment.quantities == {line["sku"]: quantity}
         else:
+            # Review remains review, but a resolved PO must not leave the earlier
+            # optimistic approval advice or missing-PO question on the screen.
+            assert initial["outcome"] == decision.outcome
             assert commitment is None
             assert decision.comparison["remaining_before"] == "4000.00"
             assert decision.comparison["shortfall"] == "500.00"

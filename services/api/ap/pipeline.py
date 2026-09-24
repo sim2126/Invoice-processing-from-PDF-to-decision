@@ -185,15 +185,16 @@ def finalize(run_id, token, data, pages, metadata):
         result = evaluate(
             data, evidence, vendors, orders, commitments, prior, selections, now().date()
         )
-        # A proposal was prepared before this transaction. The current checks
-        # can differ after another invoice commits; never present a stale draft.
-        if (
-            assistance.get("status") == "ready"
-            and metadata.get("assistant_outcome") != result["outcome"]
+        # A proposal predates this transaction and the supported PO selection.
+        # Applying a PO can change the outstanding checks without changing the
+        # overall outcome; always refresh its explanation from the final policy.
+        if assistance.get("status") == "ready" and (
+            auto_po or metadata.get("assistant_outcome") != result["outcome"]
         ):
             assistance = {
                 **assistance,
                 "next_step": result["next_action"],
+                "question": None,
                 "draft_message": None,
                 "explanation": (
                     "A supported purchase-order match was applied. "

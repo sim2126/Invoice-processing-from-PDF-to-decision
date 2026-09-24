@@ -453,8 +453,16 @@ def draw(c, d, page=1):
         c.drawString(42, 218, "Service / delivery note")
         c.setFont("Helvetica", 10)
         c.drawString(42, 199, d["followup_scope"])
+        c.setFont("Helvetica-Bold", 10)
         c.drawString(
-            42, 180, "Payment terms: Net 30. Please include the invoice number with queries."
+            42,
+            180,
+            f"Quantity: {d['quantity']}  |  Unit of measure: {d['unit']}  |  "
+            f"Unit price: {d['currency']} {Decimal(d['price']):.2f} per {d['unit']}",
+        )
+        c.setFont("Helvetica", 10)
+        c.drawString(
+            42, 160, "Payment terms: Net 30. Please include the invoice number with queries."
         )
     c.setFont("Helvetica", 8)
     c.setFillColor(HexColor("#616A64"))
