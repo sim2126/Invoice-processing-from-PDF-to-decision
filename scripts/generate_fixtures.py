@@ -315,9 +315,32 @@ def generate(filename, d):
             page.close()
 
 
+def generate_project_reference():
+    c = canvas.Canvas(str(OUT / "project-assignment.pdf"), pagesize=(612, 792), invariant=1)
+    c.setTitle("Project assignment reference")
+    c.setFillColor(HexColor("#092F39"))
+    c.setFont("Helvetica-Bold", 24)
+    c.drawString(42, 728, "Project assignment")
+    c.setFont("Helvetica", 12)
+    lines = [
+        "Northstar Studio | Procurement records",
+        "Recorded by Maya Patel | 15 September 2026",
+        "Invoice MER-2081 from supplier MERIDIAN-002 (Meridian Creative)",
+        "is assigned to PO-1088 for the Brand studio September project.",
+        "Scope: 20 hours of design services at USD 100.00 per hour.",
+        "This assignment identifies the project; invoice checks still apply.",
+    ]
+    for index, line in enumerate(lines):
+        c.drawString(42, 675 - index * 32, line)
+    c.setFont("Helvetica", 8)
+    c.drawString(42, 57, "SYNTHETIC REFERENCE | FICTIONAL PROJECT | FOR DEMONSTRATION ONLY")
+    c.save()
+
+
 if __name__ == "__main__":
     for name, data in cases:
         generate(name, data)
+    generate_project_reference()
     (ROOT / "fixtures" / "manifest.json").write_text(
         json.dumps(
             {"version": "corpus-1", "cases": [{"file": name, **d} for name, d in cases]}, indent=2

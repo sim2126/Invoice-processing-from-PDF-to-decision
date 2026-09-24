@@ -9,11 +9,9 @@ import {
   CircleAlert,
   Clock3,
   FileCheck2,
-  FileText,
   Inbox,
   LoaderCircle,
   Plus,
-  RotateCcw,
   Search,
   ShieldCheck,
   SlidersHorizontal,
@@ -21,11 +19,11 @@ import {
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { Badge, ErrorNotice, Metric, Policy, status } from "./common";
+import { LoadExamples } from "./load-examples";
 
 export function WorkQueue({
   session,
   onUpload,
-  onFresh,
   attentionOnly = false,
 }: {
   session: Session;
@@ -85,14 +83,14 @@ export function WorkQueue({
     <div className="queue-page">
       <div className="page-heading">
         <div>
-          <h1>{attentionOnly ? "Needs attention" : "Invoices"}</h1>
+          <h1>{attentionOnly ? "To-do" : "Invoices"}</h1>
           <p>
             {attentionOnly
               ? "Resolve exceptions, confirm details, and get invoices moving."
               : "Every invoice, its evidence, and a clear next step."}
           </p>
         </div>
-        <Button onClick={onUpload}>
+        <Button onClick={onUpload} disabled={session.user.role === "viewer"}>
           <Plus size={18} /> Upload invoice
         </Button>
       </div>
@@ -102,7 +100,7 @@ export function WorkQueue({
             <Metric
               label="Invoices processed"
               value={String(metrics?.processed ?? "—")}
-              detail={`${metrics?.uploaded ?? 0} uploaded this session`}
+              detail={`${metrics?.uploaded ?? 0} uploaded in this workspace`}
               icon={<FileCheck2 size={18} />}
             />
             <Metric
@@ -136,7 +134,8 @@ export function WorkQueue({
           </section>
           <div className="scope-note">
             <span className="tiny-dot" />
-            Current demo session · Unique invoices · Seeded history excluded
+            Current workspace · Unique invoices · Historical commitments
+            excluded
           </div>
         </>
       )}
@@ -298,7 +297,7 @@ export function WorkQueue({
                   ? "Invoices that need a decision or a retry will appear here."
                   : all.length
                     ? "Try another status or search term."
-                    : "Upload an invoice, or explore the demo library. We’ll read the document, check the purchase order, and show the next step."}
+                    : "Upload an invoice, or explore the sample invoices. We’ll read the document, check the purchase order, and show the next step."}
               </p>
               {caughtUp && all.length > 0 ? (
                 <Link className="button button-outline" href="/">
@@ -320,9 +319,10 @@ export function WorkQueue({
                   <ArrowRight size={15} />
                 </Button>
               )}
+              {!all.length && <LoadExamples session={session} />}
               {!all.length && (
                 <Link className="empty-library-link" href="/demo">
-                  Explore demo library <ArrowRight size={15} />
+                  Explore sample invoices <ArrowRight size={15} />
                 </Link>
               )}
             </div>
@@ -337,29 +337,6 @@ export function WorkQueue({
             Private to workspace {session.workspace}
           </span>
         </div>
-      </section>
-      <section
-        className="demo-callout"
-        id="scenarios"
-        aria-label="Try the demo"
-      >
-        <span className="demo-callout-icon">
-          <FileText size={22} />
-        </span>
-        <div>
-          <h2>See how a clear decision gets made</h2>
-          <p>
-            Five built-in PDFs, from a clean match to the exceptions that
-            matter.
-          </p>
-        </div>
-        <Link className="button button-outline" href="/demo">
-          Demo library <ArrowRight size={17} />
-        </Link>
-        <button className="text-button fresh-demo-link" onClick={onFresh}>
-          <RotateCcw size={15} />
-          Start fresh demo
-        </button>
       </section>
       <footer className="page-footer">
         <span>Original evidence. Every decision recorded.</span>

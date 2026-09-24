@@ -44,7 +44,7 @@ pytestmark = [
 
 
 @pytest.fixture(autouse=True)
-def dedicated_database():
+def dedicated_database(monkeypatch):
     assert settings.database_url.endswith("/apdesk_test"), (
         "Integration tests require a separate apdesk_test database"
     )
@@ -52,6 +52,8 @@ def dedicated_database():
     # their unfinished jobs so the bounded dispatcher batch belongs to this test.
     with Session.begin() as db:
         db.execute(text("UPDATE run SET state='FAILED' WHERE state IN ('QUEUED', 'RUNNING')"))
+    # These tests isolate financial transactions from the separately tested provider boundary.
+    monkeypatch.setattr(pipeline.assistant, "recommend", lambda *args: {"status": "unavailable"})
 
 
 @pytest.fixture
@@ -290,6 +292,164 @@ def client_for(workspace):
     client.cookies.set("ap_session", workspace[1])
     client.headers.update({"origin": settings.origin, "x-csrf-token": workspace[2]})
     return client
+
+
+def test_named_profile_invitation_roles_revocation_and_single_use(workspace):
+    owner = client_for(workspace)
+    profile = owner.post("/profile", json={"name": "Maya Patel", "email": "maya@example.com"})
+    assert profile.status_code == 200
+    assert owner.get("/session").json()["user"]["name"] == "Maya Patel"
+    assert (
+        owner.post(
+            "/company", json={"name": "Juniper Studio", "address": "", "ai_assistance": True}
+        ).status_code
+        == 200
+    )
+    invitation = owner.post(
+        "/team/invitations", json={"email": "alex@example.com", "role": "viewer"}
+    )
+    assert invitation.status_code == 201
+    token = invitation.json()["url"].split("#token=")[1]
+    viewer = TestClient(app, headers={"origin": settings.origin})
+    assert (
+        viewer.post("/invitations/preview", json={"token": token}).json()["company"]
+        == "Juniper Studio"
+    )
+    joined = viewer.post("/invitations/accept", json={"token": token, "name": "Alex Rivera"})
+    assert joined.status_code == 200
+    viewer.headers["x-csrf-token"] = joined.json()["csrf"]
+    assert joined.json()["workspace"] == workspace[0][:8]
+    assert viewer.get("/suppliers").status_code == 200
+    assert viewer.post("/company", json={"name": "Other"}).status_code == 403
+    assert viewer.post("/team/invitations", json={"email": "third@example.com"}).status_code == 403
+    assert (
+        viewer.post(
+            "/documents", files={"file": ("bad.pdf", b"fake", "application/pdf")}
+        ).status_code
+        == 403
+    )
+    assert (
+        viewer.post(
+            "/invoices", files={"file": ("bad.pdf", b"fake", "application/pdf")}
+        ).status_code
+        == 403
+    )
+    assert (
+        viewer.post("/invitations/accept", json={"token": token, "name": "Again"}).status_code
+        == 410
+    )
+    assert owner.delete(f"/team/members/{joined.json()['user']['id']}").status_code == 204
+    assert viewer.get("/session").status_code == 401
+    another = owner.post("/team/invitations", json={"email": "jamie@example.com"}).json()
+    assert owner.delete(f"/team/invitations/{another['id']}").status_code == 204
+    assert (
+        viewer.post(
+            "/invitations/accept",
+            json={"token": another["url"].split("#token=")[1], "name": "Jamie Lee"},
+        ).status_code
+        == 410
+    )
+
+
+def test_reference_documents_are_scoped_deduplicated_previewable_and_archivable(workspace):
+    from ap import assistant
+    from ap.db import CompanyDocument
+
+    client = client_for(workspace)
+    pdf = Path("fixtures/pdfs/01-clean.pdf").read_bytes()
+    document = client.post(
+        "/documents", files={"file": ("supplier-reference.pdf", pdf, "application/pdf")}
+    )
+    assert document.status_code == 201, document.text
+    document_id = document.json()["id"]
+    assert (
+        client.post("/documents", files={"file": ("same.pdf", pdf, "application/pdf")}).json()["id"]
+        == document_id
+    )
+    assert client.get(f"/documents/{document_id}/source").content == pdf
+    assert client.get(f"/documents/{document_id}/pages/1").content.startswith(b"\x89PNG")
+    with Session.begin() as db:
+        other, token = seed_workspace(db)
+    stranger = client_for((other.id, token, other.csrf))
+    assert stranger.get("/documents").json() == []
+    for suffix in ("source", "pages/1"):
+        assert stranger.get(f"/documents/{document_id}/{suffix}").status_code == 404
+    assert stranger.delete(f"/documents/{document_id}").status_code == 404
+    with Session() as db:
+        own_sources, _ = assistant.retrieve(
+            db, workspace[0], {"vendor_identifier": "ALDER-001"}, [], [], []
+        )
+        other_sources, _ = assistant.retrieve(
+            db, other.id, {"vendor_identifier": "ALDER-001"}, [], [], []
+        )
+    assert any(s.get("document_id") == document_id for s in own_sources)
+    assert not any(s.get("document_id") == document_id for s in other_sources)
+    assert client.delete(f"/documents/{document_id}").status_code == 204
+    assert client.get("/documents").json() == []
+    with Session() as db:
+        assert db.get(CompanyDocument, document_id).archived
+        sources, _ = assistant.retrieve(
+            db, workspace[0], {"vendor_identifier": "ALDER-001"}, [], [], []
+        )
+        assert not any(s.get("document_id") == document_id for s in sources)
+
+
+def test_ai_supported_po_still_obeys_current_budget(workspace, facts):
+    from ap.db import CompanyDocument
+
+    record = pending(workspace[0], facts, "45", reference="AI-OVER-LIMIT")
+    invoice_id, run_id, token, data, _ = record
+    data["po_reference"], data["po_references"] = None, []
+    pages = pages_and_citations(data)
+    quote = "Invoice AI-OVER-LIMIT for supplier ALDER-001 is assigned to PO-1042."
+    with Session.begin() as db:
+        po = db.scalar(select(PO).where(PO.workspace_id == workspace[0], PO.reference == "PO-1042"))
+        doc = CompanyDocument(
+            workspace_id=workspace[0],
+            filename="assignment.pdf",
+            object_key="test",
+            sha256=uid(),
+            page_data=[{"page": 1, "text": quote}],
+            uploaded_by="Maya Patel",
+        )
+        db.add(doc)
+        db.flush()
+        assistance = {
+            "status": "ready",
+            "suggested_po_id": po.id,
+            "sources": [{"kind": "document", "document_id": doc.id, "quote": quote}],
+        }
+    pipeline.finalize(
+        run_id,
+        token,
+        data,
+        pages,
+        {"model": "test", "assistant": assistance, "assistant_outcome": "NEEDS_REVIEW"},
+    )
+    with Session() as db:
+        decision = db.scalar(select(Decision).where(Decision.run_id == run_id))
+        assert decision.assistant["auto_matched"] is True
+        assert decision.outcome == "NEEDS_REVIEW"
+        assert decision.po_id == po.id
+        assert db.scalar(select(Commitment.id).where(Commitment.invoice_id == invoice_id)) is None
+
+
+def test_ai_provider_failure_keeps_automatic_checks_available(workspace, facts, monkeypatch):
+    record = pending(workspace[0], facts)
+
+    def unavailable(*args):
+        raise TimeoutError("test-only provider timeout")
+
+    monkeypatch.setattr(pipeline.assistant, "recommend", unavailable)
+    metadata = pipeline.prepare_assistance(
+        workspace[0], record[0], record[3], record[4], {}, record[1], record[2]
+    )
+    assert metadata["assistant"]["status"] == "unavailable"
+    pipeline.finalize(record[1], record[2], record[3], record[4], {"model": "test", **metadata})
+    with Session() as db:
+        decision = db.scalar(select(Decision).where(Decision.run_id == record[1]))
+        assert decision.outcome == "APPROVED"
+        assert decision.assistant["status"] == "unavailable"
 
 
 def test_demo_preview_and_pack_are_session_scoped_read_only(workspace):

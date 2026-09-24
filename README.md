@@ -1,6 +1,6 @@
 # AP Review Desk
 
-A PDF-to-decision accounts-payable demo with real document extraction, source evidence, purchase-order checks, live progress, and an auditable review loop.
+A PDF-to-decision accounts-payable workspace with real AI extraction, retrieval from company references, cited review assistance, automatic purchase-order checks, and an auditable review loop.
 
 The repository contains application/test source, configuration, dependency locks, and this README. PDFs, datasets, screenshots, reports, credentials, uploaded documents, and internal build materials are excluded. Synthetic demonstration PDFs are generated from Python source during the Docker build; no PDF files need to be downloaded from this repository.
 
@@ -45,23 +45,33 @@ Adding `-v` to `down` deletes this project's persistent volumes. The database/st
 
 ## Try the workflow
 
-Open the [hosted demo](https://inv-pdf.up.railway.app) and choose **Demo library**. No dataset setup is needed: each browser workspace starts with fictional vendors, purchase orders and prior accepted balances.
+Open the [hosted demo](https://inv-pdf.up.railway.app). Choose **Load example invoices** to populate the queue with four real PDFs, or open **Documents → Sample invoices** to run them individually. Each browser workspace starts with fictional suppliers, purchase orders and prior accepted balances. Loading examples uses the real processing pipeline and is idempotent for the same source files.
 
-Use **Invoices** for the full queue and **Needs attention** for unresolved reviews, blocked invoices and failed runs. Search, status filters and sorting work in both views.
+Use **Invoices** for the full queue and **To-do** for unresolved reviews, blocked invoices and failed runs. Search, status filters and sorting work in both views. **Suppliers** shows invoice totals, exceptions, purchase orders and accepted commitments from workspace records; these figures are not payment balances.
 
-Each of the five sample cards has an **eye icon** to preview the actual PDF, zoom controls, a download icon, and **Run** to submit it. Previewing does not create an invoice or use the extraction model. **Download demo pack (5 PDFs)** provides all five originals plus a short testing guide in a ZIP, useful for sharing or testing the normal upload path.
+Each of the five sample rows has an **eye icon** to preview the actual PDF, zoom controls, a download icon, and **Run** to submit it. Previewing does not create an invoice or use the extraction model. **Download demo pack (5 PDFs)** provides all five originals plus a short testing guide in a ZIP, useful for sharing or testing the normal upload path.
 
 Upload a PDF or use the five scenario buttons, which submit real generated PDFs through normal intake:
 
 1. **A clean match:** $1,200 against PO-1038; expected approval.
 2. **Same invoice, new PDF:** run the clean case first; alternate rendering is blocked as a duplicate.
 3. **A PO at its limit:** $4,500 against $4,000 remaining; review with a $500 shortfall.
-4. **Two possible orders:** select PO-1088 with a reason in **Review & resolve**; checks rerun and history retains both decisions.
+4. **Two possible orders:** initially requires review because both orders are plausible. Open **Documents → Company references → Add example reference**, then return to the invoice and select **Ask AI to review**. AI retrieves the explicit assignment of MER-2081 / MERIDIAN-002 to PO-1088; the server validates that evidence and reruns every check before approval. Alternatively confirm the PO in **Review & resolve**. Both paths preserve history.
 5. **The numbers disagree:** a real scan contains conflicting printed totals; keep it on hold and request a corrected invoice.
 
-**Start fresh demo** creates a separate workspace with the original seed balances. Extraction is probabilistic, so uncertain or unsupported evidence may require review. A missing key or provider failure is shown as an execution failure, never a fabricated approval.
+**Settings → General → Start a fresh workspace** creates a separate workspace with the original seed balances. Extraction is probabilistic, so uncertain or unsupported evidence may require review. Failed extraction is an execution failure; unavailable AI assistance is explicitly marked and the exact policy checks remain available.
 
-Approval records an accepted invoice commitment for the next AP step. It does not execute payment or confirm receipt of goods. Scope: fictional companies/vendors, USD, one invoice/PO per PDF, two-way matching, maximum 10 MB/10 pages by default. Reviewers cannot override hard blockers or increase PO ceilings. The displayed actor is a demo session, not a verified human identity.
+Approval records an accepted invoice commitment for the next AP step. It does not execute payment or confirm receipt of goods. Scope: fictional companies/suppliers, USD, one invoice/PO per PDF, two-way matching, maximum 10 MB/10 pages by default. Reviewers and AI cannot override hard blockers or increase PO ceilings.
+
+## AI and workspace features
+
+- **Grounded assistance:** the existing model extracts invoice facts, then a bounded structured-output call explains the checks, cites retrieved sources and drafts a follow-up. Relevant references are retrieved with lexical matching from this workspace's PDFs. This is retrieval-augmented generation over a small scoped corpus, not a vector database or an unrestricted agent. Quotes and source IDs are verified; this does not guarantee that every generated interpretation is correct.
+- **Automatic missing-PO matching:** requires an explicit reference containing the invoice number, supplier identifier and a unique active PO. Conflicting references, archived sources, printed PO references and human selections prevent automatic replacement. Current quantities, amounts, duplicates and balances are rechecked under the final database lock. Financial arithmetic uses Decimal, not model arithmetic.
+- **Company references:** upload, preview, download and archive PDFs. At most 20 active PDFs; 30 reference uploads per workspace/day and 300 globally. Archived files leave future retrieval; recorded citation quotes remain in decision history.
+- **Named profiles and team access:** edit your name/contact email and company details. Owners create/revoke single-use invitation links and remove members; reviewers process invoices; viewers read only. No invitation email is sent. Links are bearer credentials, emails are unverified, and access expires with the evaluation workspace (24 hours by default). This is not an enterprise identity/login system.
+- **Connections:** Gmail, Outlook, QuickBooks Online, Xero and NetSuite are marked **Coming soon**. No synchronization, email sending or ERP posting is implemented. AI follow-ups are drafts to review and copy.
+
+Keep company identity separate from the user's profile. New workspaces start with Prabhakar Kumar as the editable owner name. All workspace records and reference retrieval are isolated by workspace.
 
 ## Development
 
@@ -104,7 +114,7 @@ $env:RUN_LIVE_E2E='1'
 pnpm test:e2e
 ```
 
-The live browser flow consumes model tokens. It covers all five scenarios, review resolution, source navigation, refresh, interrupted streaming/polling, keyboard controls, accessibility, and mobile layouts. Test screenshots and reports stay in ignored local folders.
+The live browser flow consumes model tokens (normally one extraction call plus one assistance call per new invoice). It covers all five scenarios, reference-backed automatic PO resolution, team permissions, document previews, review resolution, refresh, interrupted streaming/polling, keyboard controls, accessibility, and mobile layouts. Test screenshots and reports stay in ignored local folders.
 
 Optional live evaluation, from the root:
 

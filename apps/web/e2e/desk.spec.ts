@@ -90,7 +90,7 @@ test("queue, file validation, keyboard, fresh session and narrow screen", async 
   await page
     .getByRole("button", { name: "Expand sidebar", exact: true })
     .click();
-  await page.getByRole("link", { name: /^Needs attention/ }).click();
+  await page.getByRole("link", { name: /^To-do/ }).click();
   await expect(page).toHaveURL(/\/attention$/);
   await expect(
     page.getByRole("heading", { name: "You’re all caught up" }),
@@ -116,11 +116,11 @@ test("queue, file validation, keyboard, fresh session and narrow screen", async 
     .click();
   await page
     .getByRole("dialog")
-    .getByRole("link", { name: "Demo library", exact: true })
+    .getByRole("link", { name: "Documents", exact: true })
     .click();
-  await expect(page).toHaveURL(/\/demo$/);
+  await expect(page).toHaveURL(/\/documents$/);
   await expect(
-    page.getByRole("heading", { name: "Demo library", exact: true }),
+    page.getByRole("heading", { name: "Documents", exact: true }),
   ).toBeVisible();
   await page.reload();
   await page
@@ -134,12 +134,13 @@ test("queue, file validation, keyboard, fresh session and narrow screen", async 
   await expect(
     page.getByRole("heading", { name: "Invoices", exact: true }),
   ).toBeVisible();
+  await page.goto("/settings");
   await page
-    .getByRole("button", { name: "Start fresh demo", exact: true })
+    .getByRole("button", { name: "Start a fresh workspace", exact: true })
     .click();
   await page
     .getByRole("dialog")
-    .getByRole("button", { name: "Start fresh demo", exact: true })
+    .getByRole("button", { name: "Start fresh workspace", exact: true })
     .click();
   await expect(
     page.getByRole("heading", { name: "Your next clear decision starts here" }),
@@ -338,9 +339,9 @@ test("live PDFs: happy path, four exceptions, correction loop, evidence, SSE, re
     page.getByText("1 of 5 invoices", { exact: true }),
   ).toBeVisible();
   await page.getByRole("textbox", { name: "Search invoices" }).fill("");
-  await page.getByRole("link", { name: /^Needs attention/ }).click();
+  await page.getByRole("link", { name: /^To-do/ }).click();
   await expect(
-    page.getByRole("heading", { name: "Needs attention", exact: true }),
+    page.getByRole("heading", { name: "To-do", exact: true }),
   ).toBeVisible();
   await expect(
     page.getByText("3 of 5 invoices", { exact: true }),

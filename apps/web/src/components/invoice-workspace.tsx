@@ -37,6 +37,7 @@ import {
   RotateCcw,
   ScanLine,
   ShieldCheck,
+  Sparkles,
   WifiOff,
   X,
 } from "lucide-react";
@@ -50,6 +51,7 @@ import {
   status,
   statusLabels,
 } from "./common";
+import { AssistantCard } from "./assistant-card";
 import { ReviewDialog } from "./review-dialog";
 
 export function InvoiceWorkspace({
@@ -99,6 +101,22 @@ export function InvoiceWorkspace({
         }),
       ),
     onSuccess: () => client.invalidateQueries({ queryKey: ["invoice", id] }),
+  });
+  const askAI = useMutation({
+    mutationFn: () =>
+      api<UploadResult>(
+        `/invoices/${id}/review`,
+        mutation(session.csrf, {
+          expected_revision: query.data?.invoice.revision,
+          reason:
+            "Requested AI review using the current company references and purchase-order records.",
+          corrections: [],
+        }),
+      ),
+    onSuccess: async () => {
+      await client.invalidateQueries({ queryKey: ["invoice", id] });
+      await client.invalidateQueries({ queryKey: ["queue"] });
+    },
   });
   if (query.isPending)
     return (
@@ -374,7 +392,10 @@ export function InvoiceWorkspace({
                 Source and history are preserved. This is an execution failure;
                 no new commercial decision was made.
               </p>
-              <Button onClick={() => retry.mutate()} disabled={retry.isPending}>
+              <Button
+                onClick={() => retry.mutate()}
+                disabled={retry.isPending || session.user.role === "viewer"}
+              >
                 <RotateCcw size={16} />
                 Retry processing
               </Button>
@@ -388,20 +409,38 @@ export function InvoiceWorkspace({
               {inv.revision}.
             </div>
           )}
-          {data.extraction && !active && inv.outcome !== "APPROVED" && (
-            <div className="review-bottom">
-              <div>
-                <strong>Resolve with evidence</strong>
-                <span>
-                  Record a correction or confirm a match. All checks run again.
-                </span>
+          {data.extraction &&
+            !active &&
+            inv.outcome !== "APPROVED" &&
+            session.user.role !== "viewer" && (
+              <div className="review-bottom">
+                <div>
+                  <strong>Resolve with evidence</strong>
+                  <span>
+                    Record a correction or confirm a match. All checks run
+                    again.
+                  </span>
+                </div>
+                {session.company.ai_assistance && (
+                  <Button
+                    variant="outline"
+                    disabled={askAI.isPending}
+                    onClick={() => askAI.mutate()}
+                  >
+                    <Sparkles size={16} />
+                    Ask AI to review
+                  </Button>
+                )}
+                <Button onClick={() => setReviewOpen(true)}>
+                  <FileSearch size={16} />
+                  Review & resolve
+                  <ArrowRight size={15} />
+                </Button>
               </div>
-              <Button onClick={() => setReviewOpen(true)}>
-                <FileSearch size={16} />
-                Review & resolve
-                <ArrowRight size={15} />
-              </Button>
-            </div>
+            )}
+          <ErrorNotice error={askAI.error} />
+          {decision && inv.decision_applicable && (
+            <AssistantCard assistance={decision.assistant} invoiceId={id} />
           )}
           <RunTimeline data={data} />
           <Tabs.Root defaultValue="checks" className="review-tabs">
@@ -646,6 +685,7 @@ export function RunTimeline({ data }: { data: Detail }) {
     ["read", "Read document"],
     ["extract", "Extract fields"],
     ["checks", "Run checks"],
+    ["assist", "AI assistance"],
     ["decision", "Decision"],
   ];
   const events = data.events.filter((e) => e.run_id === data.run.id);

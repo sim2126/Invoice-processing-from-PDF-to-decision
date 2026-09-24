@@ -39,6 +39,49 @@ class Workspace(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     uploads: Mapped[int] = mapped_column(default=0)
+    company: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class Member(Base):
+    __tablename__ = "member"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    workspace_id: Mapped[str] = mapped_column(ForeignKey("workspace.id"), index=True)
+    name: Mapped[str] = mapped_column(String(100))
+    email: Mapped[str] = mapped_column(String(200))
+    role: Mapped[str] = mapped_column(String(20), default="reviewer")
+    token_hash: Mapped[str | None] = mapped_column(String(64), unique=True)
+    csrf: Mapped[str] = mapped_column(String(64))
+    active: Mapped[bool] = mapped_column(default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    __table_args__ = (CheckConstraint("role IN ('owner','reviewer','viewer')"),)
+
+
+class Invitation(Base):
+    __tablename__ = "invitation"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    workspace_id: Mapped[str] = mapped_column(ForeignKey("workspace.id"), index=True)
+    email: Mapped[str] = mapped_column(String(200))
+    role: Mapped[str] = mapped_column(String(20))
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoked: Mapped[bool] = mapped_column(default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    __table_args__ = (CheckConstraint("role IN ('reviewer','viewer')"),)
+
+
+class CompanyDocument(Base):
+    __tablename__ = "company_document"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    workspace_id: Mapped[str] = mapped_column(ForeignKey("workspace.id"), index=True)
+    filename: Mapped[str] = mapped_column(String(200))
+    object_key: Mapped[str] = mapped_column(String(220))
+    sha256: Mapped[str] = mapped_column(String(64))
+    page_data: Mapped[list] = mapped_column(JSON, default=list)
+    uploaded_by: Mapped[str] = mapped_column(String(100))
+    archived: Mapped[bool] = mapped_column(default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    __table_args__ = (UniqueConstraint("workspace_id", "sha256"),)
 
 
 class Policy(Base):
@@ -142,6 +185,7 @@ class Decision(Base):
     po_id: Mapped[str | None] = mapped_column(ForeignKey("purchase_order.id"))
     comparison: Mapped[dict] = mapped_column(JSON, default=dict)
     duplicate_id: Mapped[str | None] = mapped_column(String(36))
+    assistant: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     __table_args__ = (CheckConstraint("outcome IN ('APPROVED','NEEDS_REVIEW','BLOCKED')"),)
 

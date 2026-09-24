@@ -10,7 +10,9 @@ import {
   CircleAlert,
   LayoutList,
   LoaderCircle,
-  Play,
+  Users,
+  Files,
+  Settings2,
   Menu,
   PanelLeftClose,
   PanelLeftOpen,
@@ -20,13 +22,20 @@ import {
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
-import { ErrorNotice, Policy, status } from "./common";
-import { DemoLibrary } from "./demo-library";
+import { ErrorNotice, status } from "./common";
+import { Documents, Suppliers, Settings, Profile } from "./product-pages";
 import { InvoiceWorkspace } from "./invoice-workspace";
 import { UploadDialog } from "./upload-dialog";
 import { WorkQueue } from "./work-queue";
 
-type DeskView = "all" | "attention" | "demo";
+type DeskView =
+  | "all"
+  | "attention"
+  | "demo"
+  | "documents"
+  | "suppliers"
+  | "settings"
+  | "profile";
 
 function Navigation({
   view,
@@ -52,30 +61,33 @@ function Navigation({
       <Link
         className={`nav-item ${view === "attention" ? "active" : ""}`}
         href="/attention"
-        aria-label={`Needs attention${attention ? ` (${attention})` : ""}`}
+        aria-label={`To-do${attention ? ` (${attention})` : ""}`}
         aria-current={view === "attention" ? "page" : undefined}
         onClick={onNavigate}
       >
         <ClipboardList size={21} />
-        <span className="nav-label">Needs attention</span>
+        <span className="nav-label">To-do</span>
         {attention > 0 && <span className="nav-count">{attention}</span>}
       </Link>
-      <Link
-        className={`nav-item ${view === "demo" ? "active" : ""}`}
-        href="/demo"
-        aria-label="Demo library"
-        aria-current={view === "demo" ? "page" : undefined}
-        onClick={onNavigate}
-      >
-        <Play size={20} />
-        <span className="nav-label">Demo library</span>
-      </Link>
-      <Policy>
-        <button className="nav-item" aria-label="Review policy">
-          <ShieldCheck size={21} />
-          <span className="nav-label">Review policy</span>
-        </button>
-      </Policy>
+      {(
+        [
+          ["suppliers", "Suppliers", Users],
+          ["documents", "Documents", Files],
+          ["settings", "Settings", Settings2],
+        ] as const
+      ).map(([key, label, Icon]) => (
+        <Link
+          key={key}
+          className={`nav-item ${view === key || (key === "documents" && view === "demo") ? "active" : ""}`}
+          href={`/${key}`}
+          aria-label={label}
+          aria-current={view === key ? "page" : undefined}
+          onClick={onNavigate}
+        >
+          <Icon size={21} />
+          <span className="nav-label">{label}</span>
+        </Link>
+      ))}
     </nav>
   );
 }
@@ -119,6 +131,22 @@ export function Desk({
       router.push("/");
     },
   });
+  const company = session.data?.company.name || "AP Review Desk";
+  const user = session.data?.user;
+  const initials = (user?.name || "Prabhakar Kumar")
+    .split(" ")
+    .map((n) => n[0])
+    .slice(0, 2)
+    .join("");
+  const titles: Record<DeskView, string> = {
+    all: "Invoices",
+    attention: "To-do",
+    demo: "Documents",
+    documents: "Documents",
+    suppliers: "Suppliers",
+    settings: "Settings",
+    profile: "Your profile",
+  };
   return (
     <div className={`app-shell ${collapsed ? "sidebar-collapsed" : ""}`}>
       <a className="skip-link" href="#main">
@@ -131,8 +159,8 @@ export function Desk({
               <ScanLine size={23} />
             </span>
             <span className="brand-name">
-              AP Review Desk
-              <span className="brand-sub">Invoice operations</span>
+              {company}
+              <span className="brand-sub">AP Review Desk</span>
             </span>
           </Link>
           <button
@@ -158,13 +186,18 @@ export function Desk({
             <p>Evidence, checks and review history in one place.</p>
           </div>
         </div>
-        <div className="sidebar-bottom">
-          <div className="company-avatar">NS</div>
+        <Link
+          href="/profile"
+          className="sidebar-bottom profile-link"
+          aria-label="Your profile"
+        >
+          <div className="company-avatar">{initials}</div>
           <div className="company-details">
-            <strong>Northstar Studio</strong>
-            <span>Demo workspace · USD</span>
+            <strong>{user?.name || "Your profile"}</strong>
+            <span>{user?.email || "Account settings"}</span>
           </div>
-        </div>
+          <ChevronRight size={16} />
+        </Link>
       </aside>
       <div className="app-body">
         <header className="topbar">
@@ -177,33 +210,25 @@ export function Desk({
           </button>
           <div className="breadcrumb">
             <Building2 size={16} />
-            <span>Northstar Studio</span>
+            <span>{company}</span>
             <ChevronRight size={13} />
-            <strong>
-              {invoiceId
-                ? "Invoice review"
-                : view === "demo"
-                  ? "Demo library"
-                  : view === "attention"
-                    ? "Needs attention"
-                    : "Invoices"}
-            </strong>
+            <strong>{invoiceId ? "Invoice review" : titles[view]}</strong>
           </div>
           <div className="topbar-right">
-            <button
+            <Link
               className="session-avatar"
-              aria-label="Start a fresh demo workspace"
-              onClick={() => setFreshOpen(true)}
+              href="/profile"
+              aria-label="Open your profile"
             >
-              NS
-            </button>
+              {initials}
+            </Link>
           </div>
         </header>
         <main id="main">
           {session.isPending ? (
             <div className="loading-screen">
               <LoaderCircle className="spin" />
-              Opening your private demo workspace…
+              Opening your workspace…
             </div>
           ) : session.error ? (
             <div className="session-error">
@@ -216,7 +241,7 @@ export function Desk({
               </h1>
               <p>{session.error.message}</p>
               <Button onClick={() => fresh.mutate()} disabled={fresh.isPending}>
-                Start a fresh demo
+                Start a fresh workspace
               </Button>
               <ErrorNotice error={fresh.error} />
             </div>
@@ -232,12 +257,22 @@ export function Desk({
                 )}
                 {invoiceId ? (
                   <InvoiceWorkspace id={invoiceId} session={session.data} />
-                ) : view === "demo" ? (
-                  <DemoLibrary
+                ) : view === "demo" || view === "documents" ? (
+                  <Documents
                     session={session.data}
+                    initialSamples={view === "demo"}
                     onUpload={() => setUploadOpen(true)}
                     onFresh={() => setFreshOpen(true)}
                   />
+                ) : view === "suppliers" ? (
+                  <Suppliers session={session.data} />
+                ) : view === "settings" ? (
+                  <Settings
+                    session={session.data}
+                    onFresh={() => setFreshOpen(true)}
+                  />
+                ) : view === "profile" ? (
+                  <Profile session={session.data} />
                 ) : (
                   <WorkQueue
                     key={view}
@@ -261,7 +296,7 @@ export function Desk({
         <DialogContent
           className="navigation-dialog"
           title="AP Review Desk"
-          description="Northstar Studio · Demo workspace"
+          description={company}
         >
           <Navigation
             view={view}
@@ -281,7 +316,7 @@ export function Desk({
             </Button>
             <Button onClick={() => fresh.mutate()} disabled={fresh.isPending}>
               {fresh.isPending && <LoaderCircle className="spin" size={16} />}
-              Start fresh demo
+              Start fresh workspace
             </Button>
           </div>
           <ErrorNotice error={fresh.error} />

@@ -21,6 +21,7 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { ErrorNotice, Policy } from "./common";
 import { ScenarioPreview } from "./scenario-preview";
+import { LoadExamples } from "./load-examples";
 
 export function DemoLibrary({
   session,
@@ -62,7 +63,7 @@ export function DemoLibrary({
     <div className="queue-page library-page">
       <div className="page-heading">
         <div>
-          <h1>Demo library</h1>
+          <h1>Sample invoices</h1>
           <p>A clean match. Four deliberate exceptions. All real PDFs.</p>
         </div>
         <Button variant="outline" onClick={onFresh}>
@@ -94,6 +95,7 @@ export function DemoLibrary({
       </section>
       <div className="library-section-heading">
         <h2>Choose a scenario</h2>
+        <LoadExamples session={session} />
         <span>Run the clean match before the duplicate.</span>
       </div>
       <ErrorNotice error={launch.error || scenarios.error} />
@@ -154,7 +156,7 @@ export function DemoLibrary({
                 <button
                   className="scenario-run"
                   onClick={() => launch.mutate(s)}
-                  disabled={launch.isPending}
+                  disabled={launch.isPending || session.user.role === "viewer"}
                   aria-label={`Run ${s.title}`}
                 >
                   {launch.isPending && launch.variables?.id === s.id ? (
@@ -216,6 +218,7 @@ export function DemoLibrary({
           onClose={() => setPreview(null)}
           onRun={() => launch.mutate(preview)}
           pending={launch.isPending}
+          canRun={session.user.role !== "viewer"}
           error={launch.error}
         />
       )}

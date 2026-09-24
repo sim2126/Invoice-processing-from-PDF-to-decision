@@ -12,6 +12,7 @@ from sqlalchemy import select, text
 from starlette.concurrency import run_in_threadpool
 
 from . import storage
+from .auth import check_origin, database, mutation, session, session_payload
 from .config import POLICY_VERSION, ROOT, settings
 from .db import (
     PO,
@@ -19,6 +20,7 @@ from .db import (
     Decision,
     Event,
     Invoice,
+    Member,
     Policy,
     Revision,
     Run,
@@ -31,6 +33,7 @@ from .db import (
 from .documents import DocumentError, get_value, validate_pdf, value_supported
 from .extraction import ExtractionFailure
 from .pipeline import consume_quota, event, po_dict, vendor_dict
+from .product import router as product_router
 from .rules import vendor_candidates
 from .schemas import (
     DecisionResponse,
@@ -47,6 +50,7 @@ from .schemas import (
 from .seed import seed_workspace
 
 app = FastAPI(title="AP Review Desk", version="0.1.0")
+app.include_router(product_router)
 
 
 @app.middleware("http")
@@ -58,53 +62,11 @@ async def security_headers(request: Request, call_next):
     return response
 
 
-def database(request: Request):
-    with Session() as db:
-        if request.method == "GET":
-            # One response must not mix an old invoice pointer with a freshly
-            # completed run/decision. Mutations retain READ COMMITTED + locks.
-            db.connection(execution_options={"isolation_level": "REPEATABLE READ"})
-        yield db
-
-
-def session(request: Request, db=Depends(database)):
-    token = request.cookies.get("ap_session", "")
-    workspace = db.scalar(
-        select(Workspace).where(Workspace.token_hash == hashlib.sha256(token.encode()).hexdigest())
-    )
-    if not workspace or workspace.expires_at <= now():
-        raise HTTPException(401, "Your demo session has expired. Start a fresh demo to continue.")
-    return workspace
-
-
-def check_origin(request):
-    if request.headers.get("origin", "").rstrip("/") != settings.origin:
-        raise HTTPException(403, "This action must be made from the review desk.")
-
-
-def mutation(request: Request, workspace=Depends(session)):
-    check_origin(request)
-    if request.headers.get("x-csrf-token") != workspace.csrf:
-        raise HTTPException(403, "Refresh the page before trying this action again.")
-    return workspace
-
-
 def owned(db, invoice_id, workspace):
     invoice = db.get(Invoice, invoice_id)
     if not invoice or invoice.workspace_id != workspace.id:
         raise HTTPException(404, "Invoice not found in this demo workspace.")
     return invoice
-
-
-def session_payload(w):
-    return SessionResponse(
-        csrf=w.csrf,
-        workspace=w.id[:8],
-        expires_at=w.expires_at.isoformat(),
-        extraction_ready=bool(settings.api_key and settings.model),
-        max_bytes=settings.max_bytes,
-        max_pages=settings.max_pages,
-    )
 
 
 @app.get("/health")
@@ -132,6 +94,8 @@ def create_session(request: Request, response: Response, db=Depends(database)):
     try:
         consume_quota(db, "sessions", 200)
         w, token = seed_workspace(db)
+        db.flush()
+        w.current_member = db.scalar(select(Member).where(Member.workspace_id == w.id))
         db.commit()
     except ExtractionFailure as exc:
         db.rollback()
@@ -296,7 +260,7 @@ async def upload(file: UploadFile, workspace=Depends(mutation), db=Depends(datab
         Audit(
             invoice_id=invoice_id,
             run_id=run_id,
-            actor="Demo session " + workspace.id[:8],
+            actor=workspace.current_member.name,
             action="UPLOAD",
             revision=1,
             policy_version=POLICY_VERSION,
@@ -326,6 +290,7 @@ def decision_payload(d):
                 "duplicate_id",
                 "policy_version",
                 "extraction",
+                "assistant",
             ]
         },
         created_at=d.created_at.isoformat(),
@@ -564,7 +529,7 @@ def review(
         Audit(
             invoice_id=inv.id,
             run_id=run_id,
-            actor="Demo session " + workspace.id[:8],
+            actor=workspace.current_member.name,
             action="REVIEW",
             revision=inv.revision,
             policy_version=POLICY_VERSION,
@@ -604,7 +569,7 @@ def retry(
         Audit(
             invoice_id=inv.id,
             run_id=run_id,
-            actor="Demo session " + workspace.id[:8],
+            actor=workspace.current_member.name,
             action="RETRY",
             revision=inv.revision,
             policy_version=POLICY_VERSION,
@@ -643,7 +608,7 @@ def export(invoice_id: str, workspace=Depends(session), db=Depends(database)):
     inv = owned(db, invoice_id, workspace)
     record["provenance"] = {
         "document_sha256": inv.sha256,
-        "identity_limit": "Opaque demo session; not verified human identity",
+        "identity_limit": "Named workspace member with bearer-link access; email is not verified",
         "decisions": [
             {
                 "id": d.id,
@@ -673,6 +638,7 @@ async def stream(
     except ValueError as exc:
         raise HTTPException(422, "Invalid event cursor.") from exc
     expiry = workspace.expires_at
+    member_id = workspace.current_member.id
     # Release the dependency's connection before holding an SSE stream open.
     db.rollback()
 
@@ -684,6 +650,10 @@ async def stream(
                 yield "event: session_expired\ndata: {}\n\n"
                 return
             with Session() as event_db:
+                member = event_db.get(Member, member_id)
+                if not member or not member.active:
+                    yield "event: session_expired\ndata: {}\n\n"
+                    return
                 batch = events_payload(event_db, invoice_id, cursor)
             for e in batch:
                 cursor = e.id
@@ -785,6 +755,15 @@ def sample_pack(workspace=Depends(session)):
 def sample_preview(scenario_id: str, workspace=Depends(session)):
     path = scenario_file(scenario_id).with_suffix(".preview.png")
     return Response(path.read_bytes(), media_type="image/png")
+
+
+@app.get("/scenarios/ambiguous/reference")
+def sample_reference(workspace=Depends(session)):
+    return Response(
+        (ROOT / "fixtures/pdfs/project-assignment.pdf").read_bytes(),
+        media_type="application/pdf",
+        headers={"Content-Disposition": 'attachment; filename="project-assignment.pdf"'},
+    )
 
 
 @app.get("/scenarios/{scenario_id}/pdf")

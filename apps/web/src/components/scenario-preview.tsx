@@ -19,12 +19,14 @@ export function ScenarioPreview({
   onRun,
   pending,
   error,
+  canRun = true,
 }: {
   scenario: Scenario;
   onClose: () => void;
   onRun: () => void;
   pending: boolean;
   error: Error | null;
+  canRun?: boolean;
 }) {
   const [zoom, setZoom] = useState(100);
   const [loaded, setLoaded] = useState(false);
@@ -113,7 +115,7 @@ export function ScenarioPreview({
           >
             <ArrowDownToLine size={16} /> Download PDF
           </a>
-          <Button onClick={onRun} disabled={pending}>
+          <Button onClick={onRun} disabled={pending || !canRun}>
             {pending ? (
               <LoaderCircle className="spin" size={16} />
             ) : (

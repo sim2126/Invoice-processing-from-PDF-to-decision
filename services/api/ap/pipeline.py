@@ -5,12 +5,13 @@ from openai import APIConnectionError, APIStatusError, APITimeoutError, RateLimi
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 
-from . import extraction, storage
+from . import assistant, extraction, storage
 from .config import POLICY_VERSION, PROMPT_VERSION, SCHEMA_VERSION, settings
 from .db import (
     PO,
     Audit,
     Commitment,
+    CompanyDocument,
     Decision,
     Event,
     Invoice,
@@ -77,16 +78,14 @@ def po_dict(p):
     }
 
 
-def financial_context(db, workspace_id, invoice_id):
+def financial_context(db, workspace_id, invoice_id, lock=True):
     vendors = [
         vendor_dict(v)
         for v in db.scalars(select(Vendor).where(Vendor.workspace_id == workspace_id))
     ]
+    order_query = select(PO).where(PO.workspace_id == workspace_id).order_by(PO.id)
     orders = [
-        po_dict(p)
-        for p in db.scalars(
-            select(PO).where(PO.workspace_id == workspace_id).order_by(PO.id).with_for_update()
-        )
+        po_dict(p) for p in db.scalars(order_query.with_for_update() if lock else order_query)
     ]
     commitments = [
         {"po_id": c.po_id, "amount": str(c.amount), "quantities": c.quantities}
@@ -133,7 +132,7 @@ def finalize(run_id, token, data, pages, metadata):
         if not lookup:
             return
         original_invoice = db.get(Invoice, lookup.invoice_id)
-        db.execute(
+        workspace = db.execute(
             select(Workspace).where(Workspace.id == original_invoice.workspace_id).with_for_update()
         ).scalar_one()
         invoice = db.execute(
@@ -164,9 +163,45 @@ def finalize(run_id, token, data, pages, metadata):
         vendors, orders, commitments, prior = financial_context(
             db, invoice.workspace_id, invoice.id
         )
-        result = evaluate(
-            data, evidence, vendors, orders, commitments, prior, revision.selections, now().date()
+        assistance = metadata.get("assistant", {})
+        if not workspace.company.get("ai_assistance", True):
+            assistance = {"status": "disabled"}
+        selections = dict(revision.selections)
+        active_documents = {
+            d.id: d.page_data
+            for d in db.scalars(
+                select(CompanyDocument).where(
+                    CompanyDocument.workspace_id == invoice.workspace_id,
+                    CompanyDocument.archived.is_(False),
+                )
+            )
+        }
+        auto_po = assistant.grounded_po(
+            data, selections, assistance, vendors, orders, active_documents
         )
+        if auto_po:
+            selections["po_id"] = auto_po
+            assistance = {**assistance, "auto_matched": True}
+        result = evaluate(
+            data, evidence, vendors, orders, commitments, prior, selections, now().date()
+        )
+        # A proposal was prepared before this transaction. The current checks
+        # can differ after another invoice commits; never present a stale draft.
+        if (
+            assistance.get("status") == "ready"
+            and metadata.get("assistant_outcome") != result["outcome"]
+        ):
+            assistance = {
+                **assistance,
+                "next_step": result["next_action"],
+                "draft_message": None,
+                "explanation": (
+                    "A supported purchase-order match was applied. "
+                    if auto_po
+                    else "Workspace balances changed while this invoice was processing. "
+                )
+                + result["summary"],
+            }
         run.model = metadata["model"]
         run.usage = metadata.get("usage", {})
         revision.extraction = data
@@ -177,6 +212,7 @@ def finalize(run_id, token, data, pages, metadata):
             "prompt": PROMPT_VERSION,
             "evidence": evidence,
             "document_hash": invoice.sha256,
+            "ai_po_selection": auto_po,
         }
         decision = Decision(
             invoice_id=invoice.id,
@@ -188,6 +224,7 @@ def finalize(run_id, token, data, pages, metadata):
             prompt_version=PROMPT_VERSION,
             model=run.model,
             extraction={**data, "verified_evidence": evidence},
+            assistant=assistance,
             **{
                 k: result[k]
                 for k in [
@@ -351,6 +388,9 @@ def process(run_id):
             "running",
             "Verifying evidence and current purchase-order commitments.",
         )
+        metadata.update(
+            prepare_assistance(workspace_id, invoice_id, data, pages, provenance, run_id, token)
+        )
         finalize(run_id, token, data, pages, metadata)
     except Exception as exc:
         transient = isinstance(exc, (APIConnectionError, APITimeoutError, RateLimitError)) or (
@@ -382,3 +422,50 @@ def process(run_id):
             else:
                 run.state, run.finished_at = "FAILED", now()
                 event(db, run_id, "processing", "failed", message)
+
+
+def prepare_assistance(workspace_id, invoice_id, data, pages, provenance, run_id, token):
+    """Network call outside any row-locking financial transaction; fail softly."""
+    try:
+        with Session() as db:
+            workspace = db.get(Workspace, workspace_id)
+            if not workspace.company.get("ai_assistance", True):
+                return {"assistant": {"status": "disabled"}}
+            context = financial_context(db, workspace_id, invoice_id, lock=False)
+            revision = db.scalar(
+                select(Revision)
+                .join(Run, Run.invoice_id == Revision.invoice_id)
+                .where(Run.id == run_id, Revision.number == Run.revision)
+            )
+            evidence = verify_evidence(data, pages, provenance.get("corrections", []))
+            result = evaluate(data, evidence, *context, revision.selections, now().date())
+            sources, candidates = assistant.retrieve(db, workspace_id, data, pages, *context[:2])
+        emit(
+            run_id,
+            token,
+            "assist",
+            "running",
+            "Reading workspace references and preparing a cited next step.",
+        )
+        with Session.begin() as db:
+            consume_quota(db, "model", settings.global_calls)
+            consume_quota(db, f"model-session:{workspace_id}", settings.session_calls)
+        assistance = assistant.recommend(data, result, sources, candidates)
+        emit(
+            run_id,
+            token,
+            "assist",
+            "passed",
+            "AI recommendation prepared with verified source quotations.",
+        )
+        return {"assistant": assistance, "assistant_outcome": result["outcome"]}
+    except Exception as exc:
+        logger.warning("Assistant unavailable for run %s (%s)", run_id, type(exc).__name__)
+        emit(
+            run_id,
+            token,
+            "assist",
+            "review",
+            "AI assistance is unavailable. Exact policy checks still run.",
+        )
+        return {"assistant": {"status": "unavailable"}}

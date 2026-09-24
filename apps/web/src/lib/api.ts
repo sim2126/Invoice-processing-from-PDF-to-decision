@@ -6,6 +6,29 @@ export type Detail = components["schemas"]["DetailResponse"];
 export type Evidence = components["schemas"]["EvidenceResponse"];
 export type Review = components["schemas"]["ReviewRequest"];
 export type UploadResult = components["schemas"]["UploadResponse"];
+export type Supplier = components["schemas"]["SupplierResponse"];
+export type SupplierDetail = components["schemas"]["SupplierDetail"];
+export type CompanyDocument = components["schemas"]["DocumentResponse"];
+export type Team = components["schemas"]["TeamResponse"];
+export type Invite = components["schemas"]["InviteCreated"];
+export type InvitePreview = components["schemas"]["InvitePreview"];
+export type Assistance = {
+  status: "ready" | "unavailable" | "disabled";
+  explanation?: string;
+  next_step?: string;
+  question?: string | null;
+  draft_message?: string | null;
+  suggested_po_id?: string | null;
+  auto_matched?: boolean;
+  sources?: {
+    id: string;
+    title: string;
+    kind: string;
+    page?: number;
+    document_id?: string;
+    quote: string;
+  }[];
+};
 export type Scenario = {
   id: string;
   title: string;
@@ -37,7 +60,7 @@ export async function api<T>(path: string, options?: RequestInit): Promise<T> {
       response.status,
     );
   }
-  return response.json();
+  return response.status === 204 ? (undefined as T) : response.json();
 }
 export function mutation(csrf: string, value: unknown): RequestInit {
   return {

@@ -8,6 +8,7 @@ import {
   type Detail,
   type Session,
   type UploadResult,
+  type Assistance,
 } from "@/lib/api";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
@@ -58,6 +59,7 @@ export function ReviewDialog({
   session: Session;
 }) {
   const client = useQueryClient();
+  const assistance = data.decision?.assistant as Assistance | undefined;
   const form = useForm<ReviewForm>({
     resolver: zodResolver(reviewSchema),
     defaultValues: {
@@ -117,9 +119,29 @@ export function ReviewDialog({
           onSubmit={form.handleSubmit((v) => review.mutate(v))}
           className="review-form"
         >
+          {assistance?.status === "ready" && assistance.question && (
+            <div className="assistant-question">
+              <strong>AI has narrowed this down</strong>
+              <p>{assistance.question}</p>
+            </div>
+          )}
           <label>
             Confirm purchase order
-            <select {...form.register("po")}>
+            <select
+              {...form.register("po", {
+                onChange: (event) => {
+                  const po = data.candidates.orders.find(
+                    (p) => p.id === event.target.value,
+                  );
+                  if (po)
+                    form.setValue(
+                      "reason",
+                      `Confirmed ${po.reference} (${po.description}) for this invoice after reviewing the project assignment.`,
+                      { shouldValidate: true },
+                    );
+                },
+              })}
+            >
               <option value="">Keep current match</option>
               {data.candidates.orders.map((po) => (
                 <option key={po.id} value={po.id}>

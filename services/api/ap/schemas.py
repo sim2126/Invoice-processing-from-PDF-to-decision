@@ -104,6 +104,20 @@ class QueueResponse(StrictModel):
     scope: str
 
 
+class SessionUser(StrictModel):
+    id: str
+    name: str
+    email: str
+    role: Literal["owner", "reviewer", "viewer"]
+
+
+class SessionCompany(StrictModel):
+    name: str
+    currency: str = "USD"
+    address: str = ""
+    ai_assistance: bool = True
+
+
 class SessionResponse(StrictModel):
     csrf: str
     workspace: str
@@ -111,6 +125,8 @@ class SessionResponse(StrictModel):
     extraction_ready: bool
     max_bytes: int
     max_pages: int
+    user: SessionUser
+    company: SessionCompany
 
 
 class UploadResponse(StrictModel):
@@ -206,6 +222,7 @@ class DecisionResponse(StrictModel):
     policy_version: str
     extraction: dict
     created_at: str
+    assistant: dict = Field(default_factory=dict)
 
 
 class DetailResponse(StrictModel):

@@ -6,7 +6,7 @@ from decimal import Decimal
 from sqlalchemy.dialects.postgresql import insert
 
 from .config import POLICY_VERSION, settings
-from .db import PO, Commitment, Policy, Vendor, Workspace, now
+from .db import PO, Commitment, Member, Policy, Vendor, Workspace, now
 
 
 def seed_workspace(db):
@@ -18,6 +18,16 @@ def seed_workspace(db):
     )
     db.add(workspace)
     db.flush()
+    db.add(
+        Member(
+            workspace_id=workspace.id,
+            name="Prabhakar Kumar",
+            email="prabhakar@example.com",
+            role="owner",
+            token_hash=workspace.token_hash,
+            csrf=workspace.csrf,
+        )
+    )
     db.execute(
         insert(Policy)
         .values(
