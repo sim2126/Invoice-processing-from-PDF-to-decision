@@ -413,8 +413,12 @@ export function buildVerdict(detail: Detail, ctx: Context): Verdict | null {
   const unverified = detail.evidence.filter((e) => e.status === "unverified").length;
   if (unverified)
     shown.push({
+      // On an approved invoice every field the decision relies on was matched,
+      // so anything unmatched is supporting detail; say so instead of alarming.
       text: sentence(
-        `${unverified} ${unverified === 1 ? "field" : "fields"} couldn’t be matched to the page text (see Fields)`,
+        inv.status === "APPROVED"
+          ? `${unverified} supporting ${unverified === 1 ? "field" : "fields"} couldn’t be matched word-for-word; the decision didn’t rely on ${unverified === 1 ? "it" : "them"} (see Fields)`
+          : `${unverified} ${unverified === 1 ? "field" : "fields"} couldn’t be matched to the page text (see Fields)`,
       ),
       cites: [],
     });
