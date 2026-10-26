@@ -14,6 +14,8 @@ ROOT_FILES = {
     "compose.dev.yaml",
     "pyproject.toml",
     "uv.lock",
+    # Hand-written vector logo used as the favicon; no other images are published.
+    "apps/web/src/app/icon.svg",
 }
 SOURCE_ROOTS = {"apps", "services", "scripts", "tests"}
 SOURCE_SUFFIXES = {

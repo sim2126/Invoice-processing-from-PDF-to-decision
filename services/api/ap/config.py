@@ -5,7 +5,12 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parents[3]
+FIXTURES = ROOT / "fixtures"
 load_dotenv(ROOT / ".env")
+
+
+def enabled(name: str, default: str) -> bool:
+    return os.getenv(name, default).strip().lower() in ("1", "true", "yes", "on")
 
 
 @dataclass(frozen=True)
@@ -17,6 +22,8 @@ class Settings:
     origin: str = os.getenv("APP_ORIGIN", "http://localhost:3000").rstrip("/")
     secure: bool = os.getenv("COOKIE_SECURE", "false").lower() == "true"
     model: str = os.getenv("INVOICE_MODEL", "")
+    # Optional, for reasoning models only (e.g. "low"); empty sends no reasoning parameter.
+    reasoning_effort: str = os.getenv("INVOICE_REASONING_EFFORT", "").strip()
     api_key: str = os.getenv("OPENAI_API_KEY", "")
     s3_endpoint: str = os.getenv("S3_ENDPOINT", "http://localhost:9002")
     s3_key: str = os.getenv("S3_ACCESS_KEY", "apdesk_local")
@@ -32,9 +39,17 @@ class Settings:
     global_uploads: int = int(os.getenv("MAX_GLOBAL_UPLOADS_DAILY", "300"))
     global_calls: int = int(os.getenv("MAX_GLOBAL_MODEL_CALLS_DAILY", "100"))
     session_calls: int = int(os.getenv("MAX_SESSION_MODEL_CALLS_DAILY", "30"))
+    # New workspaces open with already-processed invoices from fixtures/history.
+    seed_history: bool = enabled("SEED_HISTORY", "true")
 
 
 settings = Settings()
+
+
+def reasoning_options() -> dict:
+    return {"reasoning": {"effort": settings.reasoning_effort}} if settings.reasoning_effort else {}
+
+
 POLICY_VERSION = "AP-2026.1"
 SCHEMA_VERSION = "invoice-1"
 PROMPT_VERSION = "extract-1"

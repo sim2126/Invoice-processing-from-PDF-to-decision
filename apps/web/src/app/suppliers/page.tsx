@@ -1,2 +1,8 @@
-import { Desk } from "@/components/desk";
-export default function Page() { return <Desk view="suppliers"/>; }
+import type { Metadata } from "next";
+import { Suppliers } from "@/components/suppliers";
+
+export const metadata: Metadata = { title: "Suppliers" };
+
+export default function Page() {
+  return <Suppliers />;
+}

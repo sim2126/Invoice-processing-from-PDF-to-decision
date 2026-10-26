@@ -7,7 +7,12 @@ from .config import settings
 from .db import Member, Session, Workspace, now
 from .schemas import SessionResponse
 
-DEFAULT_COMPANY = {"name": "Northstar Studio", "currency": "USD", "ai_assistance": True}
+DEFAULT_COMPANY = {
+    "name": "Juniper Labs",
+    "currency": "USD",
+    "address": "48 Foundry Street, Portland, OR 97209",
+    "ai_assistance": True,
+}
 
 
 def database(request: Request):
@@ -35,7 +40,7 @@ def session(request: Request, db=Depends(database)):
 
 def check_origin(request):
     if request.headers.get("origin", "").rstrip("/") != settings.origin:
-        raise HTTPException(403, "This action must be made from the review desk.")
+        raise HTTPException(403, "This action must be made from Tickmark.")
 
 
 def authenticated_mutation(request: Request, workspace=Depends(session)):

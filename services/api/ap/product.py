@@ -50,8 +50,13 @@ from .product_schemas import (
     SupplierResponse,
     TeamResponse,
 )
-from .rules import decimal
-from .schemas import SessionResponse
+from .rules import decimal, money
+from .schemas import (
+    PurchaseOrderLine,
+    PurchaseOrderRow,
+    PurchaseOrderVendor,
+    SessionResponse,
+)
 
 router = APIRouter()
 
@@ -346,7 +351,7 @@ def suppliers(workspace=Depends(session), db=Depends(database)):
 
 @router.get("/suppliers/{supplier_id}", response_model=SupplierDetail)
 def supplier_detail(supplier_id: str, workspace=Depends(session), db=Depends(database)):
-    from .main import row
+    from .main import invoice_rows
 
     supplier = next((s for s in supplier_rows(db, workspace) if s.id == supplier_id), None)
     if not supplier:
@@ -365,9 +370,67 @@ def supplier_detail(supplier_id: str, workspace=Depends(session), db=Depends(dat
     )
     return SupplierDetail(
         supplier=supplier,
-        invoices=[row(db, invoice) for invoice in invoices],
+        invoices=invoice_rows(db, list(invoices)),
         orders=[po_dict(po) for po in orders],
     )
+
+
+def quantity_text(value: Decimal) -> str:
+    return format(value.normalize(), "f") if value else "0"
+
+
+@router.get("/purchase-orders", response_model=list[PurchaseOrderRow])
+def purchase_orders(workspace=Depends(session), db=Depends(database)):
+    """Each order with what accepted invoices, including seeded history, have used."""
+    vendors = {
+        v.id: v for v in db.scalars(select(Vendor).where(Vendor.workspace_id == workspace.id))
+    }
+    commitments = list(
+        db.scalars(select(Commitment).where(Commitment.workspace_id == workspace.id))
+    )
+    rows = []
+    for po in db.scalars(select(PO).where(PO.workspace_id == workspace.id).order_by(PO.reference)):
+        accepted = [c for c in commitments if c.po_id == po.id]
+        committed = sum((c.amount for c in accepted), Decimal("0"))
+        lines = []
+        for line in po.lines:
+            quantity = decimal(line.get("quantity")) or Decimal("0")
+            used = sum(
+                (decimal(c.quantities.get(line["sku"], "0")) or Decimal("0") for c in accepted),
+                Decimal("0"),
+            )
+            lines.append(
+                PurchaseOrderLine(
+                    sku=line["sku"],
+                    description=line.get("description") or "",
+                    unit=line.get("unit") or "",
+                    unit_price=money(decimal(line.get("unit_price")) or Decimal("0")),
+                    quantity=quantity_text(quantity),
+                    committed_quantity=quantity_text(used),
+                    remaining_quantity=quantity_text(quantity - used),
+                )
+            )
+        vendor = vendors[po.vendor_id]
+        rows.append(
+            PurchaseOrderRow(
+                id=po.id,
+                reference=po.reference,
+                description=po.description,
+                status="ACTIVE" if po.status == "ACTIVE" else "CLOSED",
+                currency=po.currency,
+                vendor=PurchaseOrderVendor(
+                    id=vendor.id,
+                    name=vendor.name,
+                    identifier=vendor.identifier,
+                    active=vendor.active,
+                ),
+                ceiling=money(po.ceiling),
+                committed=money(committed),
+                remaining=money(po.ceiling - committed),
+                lines=lines,
+            )
+        )
+    return rows
 
 
 def document_view(document):
@@ -399,6 +462,14 @@ def documents(workspace=Depends(session), db=Depends(database)):
 async def upload_document(file: UploadFile, workspace=Depends(mutation), db=Depends(database)):
     raw = await file.read(settings.max_bytes + 1)
     await file.close()
+    return await run_in_threadpool(save_reference, db, workspace, file.filename, raw)
+
+
+def save_reference(db, workspace, filename, raw):
+    """The single intake path for company reference documents. Idempotent by SHA-256.
+
+    Blocking (PDF reading, storage, database); async handlers run it in a worker thread.
+    """
     digest = hashlib.sha256(raw).hexdigest()
     existing = db.scalar(
         select(CompanyDocument).where(
@@ -424,7 +495,7 @@ async def upload_document(file: UploadFile, workspace=Depends(mutation), db=Depe
         db.rollback()
         raise HTTPException(429, "Reference upload limit reached. Try again tomorrow.") from exc
     try:
-        pages, images = await run_in_threadpool(read_document, raw)
+        pages, images = read_document(raw)
     except DocumentError as exc:
         raise HTTPException(422, str(exc)) from exc
     if not any(p["text"].strip() for p in pages):
@@ -448,7 +519,7 @@ async def upload_document(file: UploadFile, workspace=Depends(mutation), db=Depe
         >= 20
     ):
         raise HTTPException(409, "Reference library is full. Archive a document first.")
-    filename = re.sub(r"[^a-zA-Z0-9.() -]", "_", file.filename or "reference.pdf")[:180]
+    filename = re.sub(r"[^a-zA-Z0-9.() -]", "_", filename or "reference.pdf")[:180]
     document = existing or CompanyDocument(
         id=uid(),
         workspace_id=workspace.id,
@@ -458,11 +529,9 @@ async def upload_document(file: UploadFile, workspace=Depends(mutation), db=Depe
     )
     document.object_key = f"{workspace.id}/documents/{document.id}/source.pdf"
     document.page_data, document.archived = pages, False
-    await run_in_threadpool(storage.put, document.object_key, raw, "application/pdf")
+    storage.put(document.object_key, raw, "application/pdf")
     for index, image in enumerate(images, 1):
-        await run_in_threadpool(
-            storage.put, f"{workspace.id}/documents/{document.id}/{index}.png", image, "image/png"
-        )
+        storage.put(f"{workspace.id}/documents/{document.id}/{index}.png", image, "image/png")
     db.add(document)
     db.commit()
     return document_view(document)

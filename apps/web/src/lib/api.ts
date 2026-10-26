@@ -1,54 +1,191 @@
 import type { components } from "./api.generated";
-export type Session = components["schemas"]["SessionResponse"];
-export type Invoice = components["schemas"]["InvoiceRow"];
-export type Queue = components["schemas"]["QueueResponse"];
-export type Detail = components["schemas"]["DetailResponse"];
-export type Evidence = components["schemas"]["EvidenceResponse"];
-export type Review = components["schemas"]["ReviewRequest"];
-export type UploadResult = components["schemas"]["UploadResponse"];
-export type Supplier = components["schemas"]["SupplierResponse"];
-export type SupplierDetail = components["schemas"]["SupplierDetail"];
-export type CompanyDocument = components["schemas"]["DocumentResponse"];
-export type Team = components["schemas"]["TeamResponse"];
-export type Invite = components["schemas"]["InviteCreated"];
-export type InvitePreview = components["schemas"]["InvitePreview"];
+
+type Schemas = components["schemas"];
+
+export type Session = Schemas["SessionResponse"];
+export type Evidence = Schemas["EvidenceResponse"];
+export type Extraction = Schemas["Extraction"];
+export type ExtractedLine = Schemas["Line"];
+export type RunEvent = Schemas["EventResponse"];
+export type Audit = Schemas["AuditResponse"];
+export type Comparison = Schemas["Comparison"];
+export type Vendor = Schemas["VendorResponse"];
+export type CandidateOrder = Schemas["POResponse"];
+export type UploadResult = Schemas["UploadResponse"];
+export type Supplier = Schemas["SupplierResponse"];
+export type CompanyDocument = Schemas["DocumentResponse"];
+export type ReviewRequest = Schemas["ReviewRequest"];
+export type RetryRequest = Schemas["RetryRequest"];
+
+/*
+ * Tickmark contract additions. These are hand-written from the shared build
+ * contract because the backend ships them in parallel; api.generated.ts is
+ * intentionally not regenerated here.
+ */
+export type InvoiceStatus =
+  | "CHECKING"
+  | "FAILED"
+  | "APPROVED"
+  | "NEEDS_REVIEW"
+  | "BLOCKED"
+  | "ON_HOLD"
+  | "REJECTED";
+export type ReasonCode =
+  | "nopo"
+  | "budget"
+  | "price"
+  | "totals"
+  | "duplicate"
+  | "closed"
+  | "inactive"
+  | "nonumber"
+  | "item"
+  | "vendor"
+  | "evidence"
+  | "po"
+  | "other";
+export type Workflow = "ON_HOLD" | "REJECTED";
+export type InvoiceSource = "upload" | "inbox" | "history";
+
+export type InvoiceRow = Schemas["InvoiceRow"] & {
+  vendor_id: string | null;
+  invoice_date: string | null;
+  due_date: string | null;
+  due_assumed: boolean;
+  status: InvoiceStatus;
+  reason_code: ReasonCode | null;
+  reason: string | null;
+  first_reason_code: ReasonCode | null;
+  first_reason: string | null;
+  workflow: Workflow | null;
+  workflow_to: string | null;
+  workflow_note: string | null;
+  workflow_by: string | null;
+  workflow_at: string | null;
+  source: InvoiceSource;
+};
+
+export type CheckGroup =
+  | "document"
+  | "supplier"
+  | "po"
+  | "lines"
+  | "totals"
+  | "duplicate"
+  | "budget";
+export type Check = Schemas["Check"] & { group: CheckGroup };
+export type Decision = Omit<Schemas["DecisionResponse"], "checks"> & {
+  checks: Check[];
+  /*
+   * Round-2 contract: why this decision is not approved (null when approved),
+   * from the same reason_for() as rows. Not yet in docs/openapi.json.
+   */
+  reason_code: ReasonCode | null;
+  reason: string | null;
+};
+
+/** Audit actions, including the round-2 AI assistant entries. */
+export type AuditAction =
+  | "UPLOAD"
+  | "DECISION"
+  | "REVIEW"
+  | "RETRY"
+  | "HOLD"
+  | "REJECT"
+  | "AI_MATCH"
+  | "AI_NO_MATCH";
+/** `after` of an AI_MATCH audit (actor "AI assistant"). */
+export type AiMatchAfter = {
+  po_reference: string;
+  document: string;
+  document_id: string;
+};
+/** `after` of an AI_NO_MATCH audit (actor "AI assistant"). */
+export type AiNoMatchAfter = { documents_checked: number };
+export type Detail = Omit<
+  Schemas["DetailResponse"],
+  "invoice" | "decision" | "history"
+> & {
+  invoice: InvoiceRow;
+  decision: Decision | null;
+  history: Decision[];
+};
+export type Queue = Omit<Schemas["QueueResponse"], "invoices"> & {
+  invoices: InvoiceRow[];
+};
+
+/** Run event stages. `check:*` events carry the worst state of one check group. */
+export type RunStage =
+  | "intake"
+  | "review"
+  | "retry"
+  | "read"
+  | "extract"
+  | "checks"
+  | "assist"
+  | "decision"
+  | "recovery"
+  | "processing"
+  | `check:${CheckGroup}`;
+
+export type HoldRequest = {
+  expected_revision: number;
+  to: string;
+  message: string;
+};
+export type RejectRequest = { expected_revision: number; reason: string };
+
+export type PurchaseOrderLine = {
+  sku: string;
+  description: string;
+  unit: string;
+  unit_price: string;
+  quantity: string;
+  committed_quantity: string;
+  remaining_quantity: string;
+};
+export type PurchaseOrder = {
+  id: string;
+  reference: string;
+  description: string;
+  status: "ACTIVE" | "CLOSED";
+  currency: string;
+  vendor: { id: string; name: string; identifier: string; active: boolean };
+  ceiling: string;
+  committed: string;
+  remaining: string;
+  lines: PurchaseOrderLine[];
+};
+
+export type InboxItem = {
+  key: string;
+  kind: "invoice" | "document";
+  sender: string;
+  subject: string;
+  received_at: string;
+  filename: string;
+  invoice_id: string | null;
+  document_id: string | null;
+};
+
+/** `decision.assistant` is a free-form object in the generated schema. */
+export type AssistantSource = {
+  id: string;
+  title: string;
+  kind: "invoice" | "order" | "document" | "policy" | "checks";
+  page?: number | null;
+  document_id?: string | null;
+  quote: string;
+};
 export type Assistance = {
-  status: "ready" | "unavailable" | "disabled";
+  status?: "ready" | "unavailable" | "disabled" | "imported";
   explanation?: string;
   next_step?: string;
   question?: string | null;
   draft_message?: string | null;
   suggested_po_id?: string | null;
   auto_matched?: boolean;
-  sources?: {
-    id: string;
-    title: string;
-    kind: string;
-    page?: number;
-    document_id?: string;
-    quote: string;
-  }[];
-};
-export type Scenario = {
-  id: string;
-  title: string;
-  description: string;
-  file: string;
-  expected: string;
-};
-export type FollowUpExample = {
-  id: string;
-  title: string;
-  description: string;
-  file: string;
-  invoice_number: string;
-  vendor: string;
-  amount: string;
-  expected_before: string;
-  expected_after: string;
-  reference_file: string;
-  reference_title: string;
-  resolution: string;
+  sources?: AssistantSource[];
 };
 
 export class ApiError extends Error {
@@ -83,6 +220,19 @@ export function mutation(csrf: string, value: unknown): RequestInit {
     body: JSON.stringify(value),
   };
 }
+/** A CSRF-protected POST without a body (inbox check / save). */
+export function action(csrf: string): RequestInit {
+  return { method: "POST", headers: { "X-CSRF-Token": csrf } };
+}
+/** Multipart upload of one PDF; the browser sets the boundary header. */
+export function fileUpload(csrf: string, file: File): RequestInit {
+  const body = new FormData();
+  body.append("file", file);
+  return { method: "POST", headers: { "X-CSRF-Token": csrf }, body };
+}
+export function removal(csrf: string): RequestInit {
+  return { method: "DELETE", headers: { "X-CSRF-Token": csrf } };
+}
 let boot: Promise<Session> | null = null;
 export function getSession() {
   if (!boot)
@@ -103,31 +253,4 @@ export function getSession() {
         boot = null;
       });
   return boot;
-}
-export function amount(value?: string | null, currency = "USD") {
-  if (value == null || !Number.isFinite(Number(value))) return "—";
-  // Formatting only; every business calculation is done by FastAPI with Decimal.
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: /^[A-Z]{3}$/.test(currency) ? currency : "USD",
-  }).format(Number(value));
-}
-export function stamp(value: string) {
-  return new Intl.DateTimeFormat("en-US", {
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  }).format(new Date(value));
-}
-export function fieldValue(data: Detail["extraction"], path: string): string {
-  if (!data) return "";
-  if (path.startsWith("lines.")) {
-    const [, index, field] = path.split(".");
-    return String(
-      data.lines[Number(index)]?.[field as keyof (typeof data.lines)[number]] ??
-        "",
-    );
-  }
-  return String(data[path as keyof typeof data] ?? "");
 }

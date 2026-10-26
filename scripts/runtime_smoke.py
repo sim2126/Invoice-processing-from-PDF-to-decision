@@ -6,6 +6,7 @@ import io
 import json
 import time
 from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
 from uuid import uuid4
 
@@ -25,7 +26,7 @@ def generated_pdf():
     rows = [
         "INVOICE | Alder Office Supply",
         "Supplier ID: ALDER-001",
-        "Bill to: Northstar Studio",
+        "Bill to: Juniper Labs, 48 Foundry Street, Portland, OR 97209",
         f"Invoice number: {reference}",
         "Invoice date: 2026-09-15",
         "Purchase order: PO-1038",
@@ -78,7 +79,8 @@ def main():
             invoice_id = saved["invoice_id"]
             current = get_json(client, f"/invoices/{invoice_id}")
             assert current["decision"]["id"] == saved["decision_id"]
-            assert current["decision"]["comparison"]["remaining_after"] == "4300.00"
+            remaining = current["decision"]["comparison"]["remaining_after"]
+            assert remaining == saved["remaining_after"]
             source = client.get(f"/invoices/{invoice_id}/source")
             source.raise_for_status()
             assert hashlib.sha256(source.content).hexdigest() == saved["sha256"]
@@ -108,7 +110,10 @@ def main():
                 current["run"]["error"] or current["decision"]["summary"]
             )
             assert current["extraction"]["invoice_number"] == reference
-            assert current["decision"]["comparison"]["remaining_after"] == "4300.00"
+            # PO-1038 already carries any seeded history; this invoice adds $700.
+            comparison = current["decision"]["comparison"]
+            remaining = comparison["remaining_after"]
+            assert Decimal(comparison["remaining_before"]) - Decimal(remaining) == Decimal("700")
             resumed_id, resumed_seconds = first_stream_event(client, invoice_id, first_id)
             assert resumed_id > first_id
             same = client.post(
@@ -145,6 +150,7 @@ def main():
                         "invoice_id": invoice_id,
                         "decision_id": current["decision"]["id"],
                         "sha256": sha,
+                        "remaining_after": remaining,
                     }
                 ),
                 encoding="utf-8",
@@ -154,7 +160,7 @@ def main():
                 "base_url": BASE,
                 "new_nonpreset_pdf": "APPROVED",
                 "expected_total": "700.00",
-                "remaining_after": "4300.00",
+                "remaining_after": remaining,
                 "source_and_render": "passed",
                 "same_file_idempotency": "passed",
                 "export_provenance": "passed",

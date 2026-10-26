@@ -174,6 +174,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/purchase-orders": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Purchase Orders
+         * @description Each order with what accepted invoices, including seeded history, have used.
+         */
+        get: operations["purchase_orders_purchase_orders_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/documents": {
         parameters: {
             query?: never;
@@ -345,6 +365,91 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/inbox": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Inbox */
+        get: operations["inbox_inbox_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/inbox/{key}/check": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Check */
+        post: operations["check_inbox__key__check_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/inbox/{key}/save": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Save */
+        post: operations["save_inbox__key__save_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/inbox/{key}/pdf": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Pdf */
+        get: operations["pdf_inbox__key__pdf_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/samples/pack": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Sample Pack */
+        get: operations["sample_pack_samples_pack_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/health": {
         parameters: {
             query?: never;
@@ -426,6 +531,46 @@ export interface paths {
         get: operations["detail_invoices__invoice_id__get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/invoices/{invoice_id}/hold": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Hold
+         * @description Wait on someone (procurement, the supplier) for an invoice that needs review.
+         */
+        post: operations["hold_invoices__invoice_id__hold_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/invoices/{invoice_id}/reject": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reject
+         * @description Close an invoice that will not be accepted. Approved invoices stay immutable.
+         */
+        post: operations["reject_invoices__invoice_id__reject_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -674,7 +819,10 @@ export interface components {
             /** Orders */
             orders: components["schemas"]["POResponse"][];
         };
-        /** Check */
+        /**
+         * Check
+         * @description A check in API responses; its group is derived, so older decisions also have one.
+         */
         Check: {
             /** Code */
             code: string;
@@ -687,6 +835,11 @@ export interface components {
             state: "passed" | "review" | "blocked" | "skipped";
             /** Message */
             message: string;
+            /**
+             * Group
+             * @enum {string}
+             */
+            group: "document" | "supplier" | "po" | "lines" | "totals" | "duplicate" | "budget";
         };
         /** Citation */
         Citation: {
@@ -758,6 +911,10 @@ export interface components {
             revision: number;
             /** Outcome */
             outcome: string;
+            /** Reason Code */
+            reason_code: ("nopo" | "budget" | "price" | "totals" | "duplicate" | "closed" | "inactive" | "nonumber" | "item" | "vendor" | "evidence" | "po" | "other") | null;
+            /** Reason */
+            reason: string | null;
             /** Summary */
             summary: string;
             /** Next Action */
@@ -907,6 +1064,37 @@ export interface components {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
         };
+        /** HoldRequest */
+        HoldRequest: {
+            /** Expected Revision */
+            expected_revision: number;
+            /** To */
+            to: string;
+            /** Message */
+            message: string;
+        };
+        /** InboxItem */
+        InboxItem: {
+            /** Key */
+            key: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "invoice" | "document";
+            /** Sender */
+            sender: string;
+            /** Subject */
+            subject: string;
+            /** Received At */
+            received_at: string;
+            /** Filename */
+            filename: string;
+            /** Invoice Id */
+            invoice_id: string | null;
+            /** Document Id */
+            document_id: string | null;
+        };
         /** InvitationResponse */
         InvitationResponse: {
             /** Id */
@@ -968,6 +1156,8 @@ export interface components {
             reference: string | null;
             /** Vendor */
             vendor: string | null;
+            /** Vendor Id */
+            vendor_id?: string | null;
             /** Total */
             total: string | null;
             /** Currency */
@@ -988,6 +1178,40 @@ export interface components {
             revision: number;
             /** Human Touched */
             human_touched: boolean;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "CHECKING" | "FAILED" | "APPROVED" | "NEEDS_REVIEW" | "BLOCKED" | "ON_HOLD" | "REJECTED";
+            /** Invoice Date */
+            invoice_date: string | null;
+            /** Due Date */
+            due_date: string | null;
+            /** Due Assumed */
+            due_assumed: boolean;
+            /** Reason Code */
+            reason_code: ("nopo" | "budget" | "price" | "totals" | "duplicate" | "closed" | "inactive" | "nonumber" | "item" | "vendor" | "evidence" | "po" | "other") | null;
+            /** Reason */
+            reason: string | null;
+            /** First Reason Code */
+            first_reason_code: ("nopo" | "budget" | "price" | "totals" | "duplicate" | "closed" | "inactive" | "nonumber" | "item" | "vendor" | "evidence" | "po" | "other") | null;
+            /** First Reason */
+            first_reason: string | null;
+            /** Workflow */
+            workflow: ("ON_HOLD" | "REJECTED") | null;
+            /** Workflow To */
+            workflow_to: string | null;
+            /** Workflow Note */
+            workflow_note: string | null;
+            /** Workflow By */
+            workflow_by: string | null;
+            /** Workflow At */
+            workflow_at: string | null;
+            /**
+             * Source
+             * @enum {string}
+             */
+            source: "upload" | "inbox" | "history";
         };
         /** Line */
         Line: {
@@ -1045,6 +1269,62 @@ export interface components {
             /** Email */
             email: string;
         };
+        /** PurchaseOrderLine */
+        PurchaseOrderLine: {
+            /** Sku */
+            sku: string;
+            /** Description */
+            description: string;
+            /** Unit */
+            unit: string;
+            /** Unit Price */
+            unit_price: string;
+            /** Quantity */
+            quantity: string;
+            /** Committed Quantity */
+            committed_quantity: string;
+            /** Remaining Quantity */
+            remaining_quantity: string;
+        };
+        /**
+         * PurchaseOrderRow
+         * @description An order with what accepted invoices (including seeded history) have used.
+         */
+        PurchaseOrderRow: {
+            /** Id */
+            id: string;
+            /** Reference */
+            reference: string;
+            /** Description */
+            description: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "ACTIVE" | "CLOSED";
+            /** Currency */
+            currency: string;
+            vendor: components["schemas"]["PurchaseOrderVendor"];
+            /** Ceiling */
+            ceiling: string;
+            /** Committed */
+            committed: string;
+            /** Remaining */
+            remaining: string;
+            /** Lines */
+            lines: components["schemas"]["PurchaseOrderLine"][];
+        };
+        /** PurchaseOrderVendor */
+        PurchaseOrderVendor: {
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+            /** Identifier */
+            identifier: string;
+            /** Active */
+            active: boolean;
+        };
         /** QueueResponse */
         QueueResponse: {
             /** Invoices */
@@ -1055,6 +1335,13 @@ export interface components {
             };
             /** Scope */
             scope: string;
+        };
+        /** RejectRequest */
+        RejectRequest: {
+            /** Expected Revision */
+            expected_revision: number;
+            /** Reason */
+            reason: string;
         };
         /** RetryRequest */
         RetryRequest: {
@@ -1514,6 +1801,26 @@ export interface operations {
             };
         };
     };
+    purchase_orders_purchase_orders_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PurchaseOrderRow"][];
+                };
+            };
+        };
+    };
     documents_documents_get: {
         parameters: {
             query?: never;
@@ -1823,6 +2130,139 @@ export interface operations {
             };
         };
     };
+    inbox_inbox_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InboxItem"][];
+                };
+            };
+        };
+    };
+    check_inbox__key__check_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UploadResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    save_inbox__key__save_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DocumentResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    pdf_inbox__key__pdf_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    sample_pack_samples_pack_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
     health_health_get: {
         parameters: {
             query?: never;
@@ -1974,6 +2414,76 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DetailResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    hold_invoices__invoice_id__hold_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                invoice_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["HoldRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UploadResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reject_invoices__invoice_id__reject_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                invoice_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RejectRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UploadResponse"];
                 };
             };
             /** @description Validation Error */

@@ -129,7 +129,18 @@ class Invoice(Base):
     current_decision: Mapped[str | None] = mapped_column(String(36))
     human_touched: Mapped[bool] = mapped_column(default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
-    __table_args__ = (UniqueConstraint("workspace_id", "sha256"),)
+    # Human workflow after a decision: waiting on someone, or closed by rejection.
+    workflow: Mapped[str | None] = mapped_column(String(20))
+    workflow_to: Mapped[str | None] = mapped_column(String(120))
+    workflow_note: Mapped[str | None] = mapped_column(Text)
+    workflow_by: Mapped[str | None] = mapped_column(String(80))
+    workflow_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    source: Mapped[str] = mapped_column(String(20), default="upload", server_default="upload")
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "sha256"),
+        CheckConstraint("workflow IN ('ON_HOLD','REJECTED')", name="invoice_workflow_check"),
+        CheckConstraint("source IN ('upload','inbox','history')", name="invoice_source_check"),
+    )
 
 
 class Revision(Base):

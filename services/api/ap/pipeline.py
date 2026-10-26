@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 
 from . import assistant, extraction, storage
+from .checks import group_events, po_source, read_message
 from .config import POLICY_VERSION, PROMPT_VERSION, SCHEMA_VERSION, settings
 from .db import (
     PO,
@@ -40,7 +41,7 @@ def consume_quota(db, kind: str, limit: int):
     ).scalar_one()
     if result > limit:
         raise extraction.ExtractionFailure(
-            "The daily demo limit has been reached. Ask the workspace owner to review usage before continuing."
+            "The daily limit has been reached. Ask the workspace owner to review usage before continuing."
         )
 
 
@@ -49,10 +50,15 @@ def event(db, run_id, stage, state, message):
 
 
 def emit(run_id, token, stage, state, message):
+    emit_many(run_id, token, [(stage, state, message)])
+
+
+def emit_many(run_id, token, items):
     with Session.begin() as db:
         run = db.get(Run, run_id)
         if run and run.attempt_token == token and run.state == "RUNNING":
-            event(db, run_id, stage, state, message)
+            for stage, state, message in items:
+                event(db, run_id, stage, state, message)
 
 
 def vendor_dict(v):
@@ -167,18 +173,19 @@ def finalize(run_id, token, data, pages, metadata):
         if not workspace.company.get("ai_assistance", True):
             assistance = {"status": "disabled"}
         selections = dict(revision.selections)
-        active_documents = {
-            d.id: d.page_data
-            for d in db.scalars(
+        documents = list(
+            db.scalars(
                 select(CompanyDocument).where(
                     CompanyDocument.workspace_id == invoice.workspace_id,
                     CompanyDocument.archived.is_(False),
                 )
             )
-        }
-        auto_po = assistant.grounded_po(
+        )
+        active_documents = {d.id: d.page_data for d in documents}
+        match = assistant.grounded_match(
             data, selections, assistance, vendors, orders, active_documents
         )
+        auto_po, matched_document = match or (None, None)
         if auto_po:
             selections["po_id"] = auto_po
             assistance = {**assistance, "auto_matched": True}
@@ -296,6 +303,10 @@ def finalize(run_id, token, data, pages, metadata):
             "passed",
             "Evidence, matching, arithmetic, duplicate and cumulative checks recorded.",
         )
+        # The authoritative per-group results, replacing the preliminary ones.
+        source = po_source(data, revision.selections, auto_matched=bool(auto_po))
+        for stage, state, message in group_events(result, data, po_source=source):
+            event(db, run_id, stage, state, message)
         event(
             db,
             run_id,
@@ -307,6 +318,21 @@ def finalize(run_id, token, data, pages, metadata):
             else "review",
             result["summary"],
         )
+        ai_audit = document_review_audit(
+            data, result, assistance, revision, auto_po, matched_document, orders, documents
+        )
+        if ai_audit:
+            db.add(
+                Audit(
+                    invoice_id=invoice.id,
+                    run_id=run_id,
+                    actor="AI assistant",
+                    revision=run.revision,
+                    policy_version=POLICY_VERSION,
+                    before={},
+                    **ai_audit,
+                )
+            )
         db.add(
             Audit(
                 invoice_id=invoice.id,
@@ -320,6 +346,42 @@ def finalize(run_id, token, data, pages, metadata):
                 reason=result["summary"],
             )
         )
+
+
+def document_review_audit(
+    data, result, assistance, revision, auto_po, document_id, orders, documents
+):
+    """What the AI found in company documents, in plain words for the audit trail.
+
+    A match is recorded whenever one is applied. "No match" is recorded only
+    for a review a person asked for, when the assistant really read the
+    documents and the invoice still has no order: no PO printed or chosen, and
+    a confirmed supplier (matching is per supplier).
+    """
+    if auto_po:
+        reference = next(o["reference"] for o in orders if o["id"] == auto_po)
+        name = next(d.filename for d in documents if d.id == document_id)
+        return {
+            "action": "AI_MATCH",
+            "after": {"po_reference": reference, "document": name, "document_id": document_id},
+            "reason": f"Matched {reference} from the company document '{name}'.",
+        }
+    if (
+        revision.provenance.get("ai_review")
+        and assistance.get("status") == "ready"
+        and result["vendor_id"] is not None
+        and result["po_id"] is None
+        and not data.get("po_reference")
+        and not data.get("po_references")
+        and not revision.selections.get("po_id")
+    ):
+        checked = len(documents)
+        return {
+            "action": "AI_NO_MATCH",
+            "after": {"documents_checked": checked},
+            "reason": f"No company document assigns this invoice to an order ({checked} on file).",
+        }
+    return None
 
 
 def process(run_id):
@@ -353,9 +415,7 @@ def process(run_id):
         run.started_at = run.started_at or now()
         run.lease_until = now() + timedelta(minutes=5)
         run.error = None
-        event(
-            db, run_id, "read", "running", f"Reading the source document · attempt {run.attempt}."
-        )
+        event(db, run_id, "read", "running", "Reading the source document.")
         revision = db.execute(
             select(Revision).where(
                 Revision.invoice_id == invoice.id, Revision.number == run.revision
@@ -372,19 +432,16 @@ def process(run_id):
             document = storage.get(object_key)
             pages, images = read_document(document)
             for i, image in enumerate(images):
-                storage.put(f"{workspace_id}/{invoice_id}/page-{i + 1}.png", image, "image/png")
+                key = storage.page_key(workspace_id, invoice_id, object_key, i + 1)
+                # Fixture-backed history already ships its rendered pages.
+                if not key.startswith(storage.FIXTURE_PREFIX):
+                    storage.put(key, image, "image/png")
             with Session.begin() as db:
                 invoice = db.get(Invoice, invoice_id)
                 invoice.page_data = pages
         else:
             document = storage.get(object_key) if existing_data is None else b""
-        emit(
-            run_id,
-            token,
-            "read",
-            "passed",
-            f"Read {len(pages)} page(s). Source coordinates retained.",
-        )
+        emit(run_id, token, "read", "passed", read_message(pages))
         if existing_data is None:
             emit(
                 run_id, token, "extract", "running", "Extracting invoice facts and source evidence."
@@ -401,7 +458,7 @@ def process(run_id):
                 token,
                 "extract",
                 "passed",
-                "Using this document's recorded extraction with reviewer revisions; all checks will run again.",
+                "Using the fields already read from this document, with any reviewer changes; every check runs again.",
             )
         emit(
             run_id,
@@ -417,8 +474,20 @@ def process(run_id):
             "running",
             "Verifying evidence and current purchase-order commitments.",
         )
+        preliminary = preliminary_checks(workspace_id, invoice_id, data, pages, provenance, run_id)
+        if preliminary:
+            emit_many(run_id, token, preliminary["events"])
         metadata.update(
-            prepare_assistance(workspace_id, invoice_id, data, pages, provenance, run_id, token)
+            prepare_assistance(
+                workspace_id,
+                invoice_id,
+                data,
+                pages,
+                provenance,
+                run_id,
+                token,
+                result=preliminary and preliminary["result"],
+            )
         )
         finalize(run_id, token, data, pages, metadata)
     except Exception as exc:
@@ -453,7 +522,37 @@ def process(run_id):
                 event(db, run_id, "processing", "failed", message)
 
 
-def prepare_assistance(workspace_id, invoice_id, data, pages, provenance, run_id, token):
+def run_selections(db, run_id):
+    revision = db.scalar(
+        select(Revision)
+        .join(Run, Run.invoice_id == Revision.invoice_id)
+        .where(Run.id == run_id, Revision.number == Run.revision)
+    )
+    return dict(revision.selections) if revision else {}
+
+
+def preliminary_checks(workspace_id, invoice_id, data, pages, provenance, run_id):
+    """Unlocked evaluation shown while assistance runs; finalize alone decides.
+
+    Runs for every invoice, with AI assistance on or off. Failure only costs
+    the early progress events, never the decision.
+    """
+    try:
+        with Session() as db:
+            context = financial_context(db, workspace_id, invoice_id, lock=False)
+            selections = run_selections(db, run_id)
+        evidence = verify_evidence(data, pages, provenance.get("corrections", []))
+        result = evaluate(data, evidence, *context, selections, now().date())
+        source = po_source(data, selections)
+        return {"result": result, "events": group_events(result, data, po_source=source)}
+    except Exception as exc:
+        logger.warning("Preliminary checks unavailable for run %s (%s)", run_id, type(exc).__name__)
+        return None
+
+
+def prepare_assistance(
+    workspace_id, invoice_id, data, pages, provenance, run_id, token, result=None
+):
     """Network call outside any row-locking financial transaction; fail softly."""
     try:
         with Session() as db:
@@ -461,13 +560,10 @@ def prepare_assistance(workspace_id, invoice_id, data, pages, provenance, run_id
             if not workspace.company.get("ai_assistance", True):
                 return {"assistant": {"status": "disabled"}}
             context = financial_context(db, workspace_id, invoice_id, lock=False)
-            revision = db.scalar(
-                select(Revision)
-                .join(Run, Run.invoice_id == Revision.invoice_id)
-                .where(Run.id == run_id, Revision.number == Run.revision)
-            )
-            evidence = verify_evidence(data, pages, provenance.get("corrections", []))
-            result = evaluate(data, evidence, *context, revision.selections, now().date())
+            if result is None:
+                evidence = verify_evidence(data, pages, provenance.get("corrections", []))
+                selections = run_selections(db, run_id)
+                result = evaluate(data, evidence, *context, selections, now().date())
             sources, candidates = assistant.retrieve(db, workspace_id, data, pages, *context[:2])
         emit(
             run_id,

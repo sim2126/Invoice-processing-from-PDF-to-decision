@@ -4,10 +4,12 @@ import re
 from datetime import date
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
-from .schemas import Check
+from .schemas import CheckRecord
 
 CENT = Decimal("0.01")
 ZERO = Decimal("0")
+# Order in which unresolved checks become the decision summary (blocked first).
+ISSUE_PRIORITY = {"duplicate": 0, "vendor": 1, "budget": 2, "arithmetic": 3, "po": 4}
 
 
 def decimal(value) -> Decimal | None:
@@ -66,7 +68,9 @@ def evaluate(data, evidence, vendors, orders, commitments, prior, selections, to
     allocations = {}
 
     def add(code, title, state, message):
-        checks.append(Check(code=code, title=title, state=state, message=message).model_dump())
+        checks.append(
+            CheckRecord(code=code, title=title, state=state, message=message).model_dump()
+        )
 
     supported = (
         data.get("document_kind") == "invoice"
@@ -211,14 +215,23 @@ def evaluate(data, evidence, vendors, orders, commitments, prior, selections, to
             else f"{po['reference']} is closed or cancelled. Contact procurement.",
         )
     else:
-        add(
-            "po",
-            "Confirm purchase order",
-            "review",
-            f"{len(candidates)} supported purchase orders. Select the correct order and record why."
-            if candidates
-            else "No supported purchase order. Ask procurement to confirm the order.",
-        )
+        printed = data.get("po_reference")
+        if vendor is None:
+            # Orders are matched per supplier; nothing is known about them yet.
+            message = (
+                f"{printed} is printed; it is matched once the supplier is confirmed."
+                if printed
+                else "Purchase orders are matched once the supplier is confirmed."
+            )
+        else:
+            message = (
+                f"{len(candidates)} supported purchase orders. Select the correct order and record why."
+                if candidates
+                else "No supported purchase order. Ask procurement to confirm the order."
+            )
+            if printed:
+                message = f"{printed} was not found among this workspace's orders. " + message
+        add("po", "Confirm purchase order", "review", message)
 
     assumptions = []
     optional = {}
@@ -305,11 +318,17 @@ def evaluate(data, evidence, vendors, orders, commitments, prior, selections, to
                 allocations[matched["sku"]] = allocations.get(matched["sku"], ZERO) + q
                 approved_price = decimal(matched["unit_price"])
                 ok = approved_price is not None and price_allowed(net_price, approved_price)
+                # Prices are compared net of tax; say so when the printed price includes it.
+                invoice_price = (
+                    f"{usd(price)} incl. {rate.normalize():f}% tax = {usd(net_price)} net"
+                    if net_price != price
+                    else usd(net_price)
+                )
                 add(
                     f"price_{index}",
                     f"Line {index + 1} unit price",
                     "passed" if ok else "review",
-                    f"Invoice {usd(net_price)} / PO {usd(approved_price or ZERO)}. Upward tolerance requires both ≤1% and ≤$1 per unit.",
+                    f"Invoice {invoice_price} / PO {usd(approved_price or ZERO)}. Upward tolerance requires both ≤1% and ≤$1 per unit.",
                 )
                 price_rows.append(
                     {
@@ -317,7 +336,10 @@ def evaluate(data, evidence, vendors, orders, commitments, prior, selections, to
                         "description": matched["description"],
                         "unit": matched["unit"],
                         "invoice_quantity": str(q),
+                        # invoice_price has always been the net unit price.
                         "invoice_price": money(net_price),
+                        "invoice_net_price": money(net_price),
+                        "invoice_printed_price": money(price),
                         "po_price": matched["unit_price"],
                     }
                 )
@@ -522,8 +544,9 @@ def evaluate(data, evidence, vendors, orders, commitments, prior, selections, to
         else "APPROVED"
     )
     issues = [c for c in checks if c["state"] in ("blocked", "review")]
-    priority = {"duplicate": 0, "vendor": 1, "budget": 2, "arithmetic": 3, "po": 4}
-    issues.sort(key=lambda c: (0 if c["state"] == "blocked" else 1, priority.get(c["code"], 9)))
+    issues.sort(
+        key=lambda c: (0 if c["state"] == "blocked" else 1, ISSUE_PRIORITY.get(c["code"], 9))
+    )
     summary = (
         issues[0]["message"]
         if issues

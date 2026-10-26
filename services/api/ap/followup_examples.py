@@ -115,11 +115,11 @@ def examples():
 @router.get("/pack")
 def example_pack():
     instructions = (
-        "AP Review Desk - invoice follow-up examples\n\n"
+        "Tickmark - invoice follow-up examples\n\n"
         "These are fictional invoices and confirmations for demonstrating the real workflow.\n"
         "Start with a fresh workspace for the expected outcomes and original order balances.\n"
         "The five examples can be run together; their invoice numbers are distinct.\n\n"
-        "1. Open Documents > Follow-up examples in the review desk.\n"
+        "1. Open Documents > Follow-up examples in Tickmark.\n"
         "2. Preview the invoice, then start it (or upload its PDF normally).\n"
         "3. Open the completed review. The missing order remains unresolved and the AI\n"
         "   can prepare a follow-up draft asking for supporting information.\n"
@@ -152,7 +152,7 @@ def example_pack():
     return Response(
         output.getvalue(),
         media_type="application/zip",
-        headers={"Content-Disposition": 'attachment; filename="ap-review-follow-up-examples.zip"'},
+        headers={"Content-Disposition": 'attachment; filename="tickmark-follow-up-examples.zip"'},
     )
 
 

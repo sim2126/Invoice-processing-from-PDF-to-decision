@@ -9,6 +9,6 @@ try {
     }
     docker compose exec -e DATABASE_URL=postgresql+psycopg://ap:ap_local_only@db:5432/apdesk_test api uv run --no-sync alembic upgrade head
     if ($LASTEXITCODE -ne 0) { throw 'Test migration failed.' }
-    docker compose exec -e DATABASE_URL=postgresql+psycopg://ap:ap_local_only@db:5432/apdesk_test -e AP_INTEGRATION=1 api uv run --no-sync pytest -q
+    docker compose exec -e DATABASE_URL=postgresql+psycopg://ap:ap_local_only@db:5432/apdesk_test -e AP_INTEGRATION=1 -e SEED_HISTORY=false api uv run --no-sync pytest -q
     if ($LASTEXITCODE -ne 0) { throw 'Backend checks failed.' }
 } finally { Pop-Location }

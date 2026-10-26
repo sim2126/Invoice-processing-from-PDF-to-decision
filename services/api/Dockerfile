@@ -8,7 +8,10 @@ RUN uv sync --frozen
 
 # Samples are reproducibly generated from source; no PDFs or datasets are
 # required in the repository or sent as part of the Docker build context.
+# History page data and evidence use the application's own document reader,
+# so only the modules it needs are copied (keeps this stage cacheable).
 FROM dependencies AS samples
+COPY services/api/ap/__init__.py services/api/ap/config.py services/api/ap/documents.py services/api/ap/rules.py services/api/ap/schemas.py services/api/ap/
 COPY scripts/generate_fixtures.py scripts/generate_fixtures.py
 RUN uv run --no-sync python scripts/generate_fixtures.py
 
@@ -16,6 +19,8 @@ FROM dependencies AS runtime
 COPY --chown=app:app services services
 COPY --chown=app:app scripts scripts
 COPY --from=samples --chown=app:app /app/fixtures/pdfs fixtures/pdfs
+COPY --from=samples --chown=app:app /app/fixtures/history fixtures/history
+COPY --from=samples --chown=app:app /app/fixtures/inbox fixtures/inbox
 COPY --chown=app:app tests tests
 COPY --chown=app:app alembic.ini ./
 ENV PYTHONPATH=/app/services/api

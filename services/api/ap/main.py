@@ -1,9 +1,10 @@
 import asyncio
 import copy
-import hashlib
 import io
+import logging
 import re
-from pathlib import Path
+from contextlib import asynccontextmanager
+from datetime import date, timedelta
 from zipfile import ZIP_DEFLATED, ZipFile
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, UploadFile
@@ -13,6 +14,7 @@ from starlette.concurrency import run_in_threadpool
 
 from . import storage
 from .auth import check_origin, database, mutation, session, session_payload
+from .checks import REASONS, comparison_view, reason_for, with_groups
 from .config import POLICY_VERSION, ROOT, settings
 from .db import (
     PO,
@@ -30,19 +32,24 @@ from .db import (
     now,
     uid,
 )
-from .documents import DocumentError, get_value, validate_pdf, value_supported
+from .documents import get_value, value_supported
 from .extraction import ExtractionFailure
 from .followup_examples import router as followup_router
+from .inbox import router as inbox_router
+from .intake import clean_filename, submit_invoice
 from .pipeline import consume_quota, event, po_dict, vendor_dict
 from .product import router as product_router
 from .rules import vendor_candidates
+from .samples import router as samples_router
 from .schemas import (
     DecisionResponse,
     DetailResponse,
     EventResponse,
     Extraction,
+    HoldRequest,
     InvoiceRow,
     QueueResponse,
+    RejectRequest,
     RetryRequest,
     ReviewRequest,
     SessionResponse,
@@ -50,9 +57,32 @@ from .schemas import (
 )
 from .seed import seed_workspace
 
-app = FastAPI(title="AP Review Desk", version="0.1.0")
+logger = logging.getLogger(__name__)
+
+
+def warm_fixtures():
+    """Load seeded history and inbox arrivals once, so the first workspace opens quickly."""
+    from . import history, inbox
+
+    try:
+        if settings.seed_history and history.available():
+            history.dataset()
+        inbox.arrivals()
+    except Exception as exc:
+        logger.warning("Fixture warm-up skipped (%s)", type(exc).__name__)
+
+
+@asynccontextmanager
+async def lifespan(_app):
+    await run_in_threadpool(warm_fixtures)
+    yield
+
+
+app = FastAPI(title="Tickmark", version="0.2.0", lifespan=lifespan)
 app.include_router(product_router)
 app.include_router(followup_router)
+app.include_router(inbox_router)
+app.include_router(samples_router)
 
 
 @app.middleware("http")
@@ -67,7 +97,7 @@ async def security_headers(request: Request, call_next):
 def owned(db, invoice_id, workspace):
     invoice = db.get(Invoice, invoice_id)
     if not invoice or invoice.workspace_id != workspace.id:
-        raise HTTPException(404, "Invoice not found in this demo workspace.")
+        raise HTTPException(404, "Invoice not found in this workspace.")
     return invoice
 
 
@@ -119,24 +149,55 @@ def get_session(workspace=Depends(session)):
     return session_payload(workspace)
 
 
-def row(db, inv):
-    run = db.get(Run, inv.current_run)
-    decision = db.get(Decision, inv.current_decision) if inv.current_decision else None
-    revision = db.scalar(
-        select(Revision).where(Revision.invoice_id == inv.id, Revision.number == inv.revision)
-    )
-    data = revision.extraction or (decision.extraction if decision else {})
+def iso_date(value) -> str | None:
+    if not isinstance(value, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+        return None
+    try:
+        return date.fromisoformat(value).isoformat()
+    except ValueError:
+        return None
+
+
+def invoice_status(run_state, workflow, outcome) -> str:
+    if run_state in ("QUEUED", "RUNNING"):
+        return "CHECKING"
+    if run_state == "FAILED":
+        return "FAILED"
+    if workflow in ("REJECTED", "ON_HOLD"):
+        return workflow
+    return outcome or "CHECKING"
+
+
+def build_row(inv, run, decision, revision, first) -> InvoiceRow:
+    data = (revision.extraction if revision else None) or (decision.extraction if decision else {})
     applicable = bool(decision and decision.revision == inv.revision)
+    invoice_date = iso_date(data.get("invoice_date"))
+    due_date, due_assumed = iso_date(data.get("due_date")), False
+    if due_date is None and invoice_date:
+        # Net 30 when the invoice prints no due date.
+        due_date = (date.fromisoformat(invoice_date) + timedelta(days=30)).isoformat()
+        due_assumed = True
+    reason_code = (
+        reason_for(decision.checks, decision.extraction)
+        if applicable and decision.outcome != "APPROVED"
+        else None
+    )
+    first_reason_code = (
+        reason_for(first.checks, first.extraction)
+        if first and first.outcome != "APPROVED"
+        else None
+    )
     return InvoiceRow(
         id=inv.id,
         filename=inv.filename,
         reference=data.get("invoice_number"),
         vendor=data.get("vendor_name"),
+        vendor_id=decision.vendor_id if decision else None,
         total=data.get("total"),
         currency=data.get("currency"),
-        po_reference=decision.comparison.get("po_reference")
-        if applicable
-        else data.get("po_reference"),
+        # The matched order, else whatever the invoice prints (never "no PO" when one is printed).
+        po_reference=(decision.comparison.get("po_reference") if applicable else None)
+        or data.get("po_reference"),
         execution=run.state,
         outcome=decision.outcome if applicable else None,
         decision_applicable=applicable,
@@ -148,38 +209,92 @@ def row(db, inv):
         if applicable
         else "Waiting for document checks.",
         created_at=inv.created_at.isoformat(),
+        status=invoice_status(run.state, inv.workflow, decision.outcome if applicable else None),
+        invoice_date=invoice_date,
+        due_date=due_date,
+        due_assumed=due_assumed,
+        reason_code=reason_code,
+        reason=REASONS.get(reason_code),
+        first_reason_code=first_reason_code,
+        first_reason=REASONS.get(first_reason_code),
+        workflow=inv.workflow,
+        workflow_to=inv.workflow_to,
+        workflow_note=inv.workflow_note,
+        workflow_by=inv.workflow_by,
+        workflow_at=inv.workflow_at.isoformat() if inv.workflow_at else None,
+        source=inv.source or "upload",
     )
+
+
+def invoice_rows(db, invoices) -> list[InvoiceRow]:
+    """Rows for many invoices with a fixed number of queries."""
+    if not invoices:
+        return []
+    ids = [inv.id for inv in invoices]
+    runs = {
+        r.id: r
+        for r in db.scalars(select(Run).where(Run.id.in_([inv.current_run for inv in invoices])))
+    }
+    decisions = list(
+        db.scalars(
+            select(Decision)
+            .where(Decision.invoice_id.in_(ids))
+            .order_by(Decision.created_at, Decision.revision)
+        )
+    )
+    by_id = {d.id: d for d in decisions}
+    first = {}
+    for d in decisions:
+        first.setdefault(d.invoice_id, d)
+    revisions = {
+        (r.invoice_id, r.number): r
+        for r in db.scalars(select(Revision).where(Revision.invoice_id.in_(ids)))
+    }
+    return [
+        build_row(
+            inv,
+            runs[inv.current_run],
+            by_id.get(inv.current_decision),
+            revisions.get((inv.id, inv.revision)),
+            first.get(inv.id),
+        )
+        for inv in invoices
+    ]
+
+
+def row(db, inv) -> InvoiceRow:
+    return invoice_rows(db, [inv])[0]
 
 
 @app.get("/invoices", response_model=QueueResponse)
 def list_invoices(workspace=Depends(session), db=Depends(database)):
-    invoices = [
-        row(db, inv)
-        for inv in db.scalars(
+    records = list(
+        db.scalars(
             select(Invoice)
             .where(Invoice.workspace_id == workspace.id)
             .order_by(Invoice.created_at.desc())
         )
-    ]
+    )
+    invoices = invoice_rows(db, records)
     completed = [i for i in invoices if i.execution == "COMPLETED" and i.decision_applicable]
     review = sum(i.outcome == "NEEDS_REVIEW" for i in completed)
     automatic = sum(i.outcome == "APPROVED" and not i.human_touched for i in completed)
-    durations = []
-    for inv in invoices:
-        if inv.execution == "COMPLETED":
-            r = db.scalar(
-                select(Run).join(Invoice, Invoice.current_run == Run.id).where(Invoice.id == inv.id)
-            )
-            if r.finished_at:
-                durations.append((r.finished_at - r.created_at).total_seconds())
-    durations.sort()
+    runs = {
+        r.id: r
+        for r in db.scalars(select(Run).where(Run.id.in_([inv.current_run for inv in records])))
+    }
+    durations = sorted(
+        (r.finished_at - r.created_at).total_seconds()
+        for r in runs.values()
+        if r.state == "COMPLETED" and r.finished_at
+    )
     median = None
     if durations:
         n = len(durations)
         median = f"{(durations[(n - 1) // 2] + durations[n // 2]) / 2:.1f}"
     return QueueResponse(
         invoices=invoices,
-        scope="Current demo session · unique uploaded invoices · historical commitments excluded",
+        scope="All invoices received by this workspace",
         metrics={
             "uploaded": len(invoices),
             "processed": len(completed),
@@ -196,9 +311,7 @@ def list_invoices(workspace=Depends(session), db=Depends(database)):
 
 @app.post("/invoices", response_model=UploadResponse, status_code=201)
 async def upload(file: UploadFile, workspace=Depends(mutation), db=Depends(database)):
-    filename = re.sub(
-        r"[^\w .()-]", "_", Path((file.filename or "invoice.pdf").replace("\\", "/")).name
-    )[:160]
+    filename = clean_filename(file.filename)
     if not filename.lower().endswith(".pdf") or file.content_type not in (
         "application/pdf",
         "application/octet-stream",
@@ -206,76 +319,11 @@ async def upload(file: UploadFile, workspace=Depends(mutation), db=Depends(datab
         raise HTTPException(422, "Choose a PDF invoice.")
     data = await file.read(settings.max_bytes + 1)
     await file.close()
-    try:
-        pages = await run_in_threadpool(validate_pdf, data)
-    except DocumentError as exc:
-        raise HTTPException(422, str(exc)) from exc
-    sha = hashlib.sha256(data).hexdigest()
-    existing = db.scalar(
-        select(Invoice).where(Invoice.workspace_id == workspace.id, Invoice.sha256 == sha)
-    )
-    if existing:
-        return UploadResponse(id=existing.id, existing=True)
-    invoice_id, run_id = uid(), uid()
-    object_key = f"{workspace.id}/{invoice_id}/source.pdf"
-    # S3 is outside the financial transaction; unreferenced objects are safe to garbage-collect.
-    try:
-        storage.put(object_key, data)
-    except Exception as exc:
-        raise HTTPException(
-            503, "Document storage is unavailable. No invoice was submitted. Try again shortly."
-        ) from exc
-    locked = db.execute(
-        select(Workspace).where(Workspace.id == workspace.id).with_for_update()
-    ).scalar_one()
-    db.refresh(locked)
-    existing = db.scalar(
-        select(Invoice).where(Invoice.workspace_id == workspace.id, Invoice.sha256 == sha)
-    )
-    if existing:
-        db.rollback()
-        return UploadResponse(id=existing.id, existing=True)
-    if locked.uploads >= settings.session_uploads:
-        raise HTTPException(429, "This session's upload limit has been reached.")
-    try:
-        consume_quota(db, "uploads", settings.global_uploads)
-    except ExtractionFailure as exc:
-        db.rollback()
-        raise HTTPException(429, str(exc)) from exc
-    inv = Invoice(
-        id=invoice_id,
-        workspace_id=workspace.id,
-        filename=filename,
-        sha256=sha,
-        object_key=object_key,
-        pages=pages,
-        current_run=run_id,
-    )
-    db.add(inv)
-    db.flush()
-    db.add(Revision(invoice_id=invoice_id, number=1, selections={}, provenance={}))
-    db.add(Run(id=run_id, invoice_id=invoice_id, revision=1))
-    db.flush()
-    locked.uploads += 1
-    event(db, run_id, "intake", "passed", f"PDF accepted · {pages} page(s). Queued for processing.")
-    db.add(
-        Audit(
-            invoice_id=invoice_id,
-            run_id=run_id,
-            actor=workspace.current_member.name,
-            action="UPLOAD",
-            revision=1,
-            policy_version=POLICY_VERSION,
-            before={},
-            after={"filename": filename, "sha256": sha},
-            reason="Invoice uploaded for review.",
-        )
-    )
-    db.commit()
-    return UploadResponse(id=invoice_id, existing=False)
+    return await run_in_threadpool(submit_invoice, db, workspace, filename, data)
 
 
 def decision_payload(d):
+    reason_code = reason_for(d.checks, d.extraction) if d.outcome != "APPROVED" else None
     return DecisionResponse(
         **{
             k: getattr(d, k)
@@ -287,14 +335,16 @@ def decision_payload(d):
                 "summary",
                 "next_action",
                 "owner",
-                "checks",
-                "comparison",
                 "duplicate_id",
                 "policy_version",
                 "extraction",
                 "assistant",
             ]
         },
+        reason_code=reason_code,
+        reason=REASONS.get(reason_code),
+        checks=with_groups(d.checks),
+        comparison=comparison_view(d.comparison, d.extraction),
         created_at=d.created_at.isoformat(),
     )
 
@@ -406,11 +456,94 @@ def lock_for_action(db, workspace, invoice_id, revision):
     return inv
 
 
+REJECTED_MESSAGE = "This invoice was rejected and is closed. Nothing more can change on it."
+
+
+def decided_for_action(db, inv):
+    """The applicable decision of a completed run, or 409."""
+    run = db.get(Run, inv.current_run)
+    if run.state != "COMPLETED":
+        raise HTTPException(
+            409, "Wait for the current checks to finish before changing the invoice."
+        )
+    decision = db.get(Decision, inv.current_decision) if inv.current_decision else None
+    if not decision or decision.revision != inv.revision:
+        raise HTTPException(409, "This invoice has no current decision to act on.")
+    return run, decision
+
+
+@app.post("/invoices/{invoice_id}/hold", response_model=UploadResponse)
+def hold(invoice_id: str, payload: HoldRequest, workspace=Depends(mutation), db=Depends(database)):
+    """Wait on someone (procurement, the supplier) for an invoice that needs review."""
+    inv = lock_for_action(db, workspace, invoice_id, payload.expected_revision)
+    if inv.workflow == "REJECTED":
+        raise HTTPException(409, REJECTED_MESSAGE)
+    run, decision = decided_for_action(db, inv)
+    if inv.workflow == "ON_HOLD":
+        raise HTTPException(409, f"This invoice is already waiting on {inv.workflow_to}.")
+    if decision.outcome != "NEEDS_REVIEW":
+        raise HTTPException(409, "Only an invoice that needs review can be put on hold.")
+    member, at = workspace.current_member, now()
+    inv.workflow, inv.workflow_to, inv.workflow_note = "ON_HOLD", payload.to, payload.message
+    inv.workflow_by, inv.workflow_at = member.name[:80], at
+    db.add(
+        Audit(
+            invoice_id=inv.id,
+            run_id=run.id,
+            actor=member.name[:80],
+            action="HOLD",
+            revision=inv.revision,
+            policy_version=POLICY_VERSION,
+            before={"workflow": None},
+            after={"to": payload.to, "message": payload.message},
+            reason=payload.message,
+            at=at,
+        )
+    )
+    db.commit()
+    return UploadResponse(id=inv.id, existing=False)
+
+
+@app.post("/invoices/{invoice_id}/reject", response_model=UploadResponse)
+def reject(
+    invoice_id: str, payload: RejectRequest, workspace=Depends(mutation), db=Depends(database)
+):
+    """Close an invoice that will not be accepted. Approved invoices stay immutable."""
+    inv = lock_for_action(db, workspace, invoice_id, payload.expected_revision)
+    if inv.workflow == "REJECTED":
+        raise HTTPException(409, "This invoice was already rejected.")
+    run, decision = decided_for_action(db, inv)
+    if decision.outcome not in ("NEEDS_REVIEW", "BLOCKED"):
+        raise HTTPException(409, "Only an invoice that needs review or is blocked can be rejected.")
+    member, at = workspace.current_member, now()
+    before = {"workflow": inv.workflow}
+    inv.workflow, inv.workflow_to, inv.workflow_note = "REJECTED", None, payload.reason
+    inv.workflow_by, inv.workflow_at = member.name[:80], at
+    db.add(
+        Audit(
+            invoice_id=inv.id,
+            run_id=run.id,
+            actor=member.name[:80],
+            action="REJECT",
+            revision=inv.revision,
+            policy_version=POLICY_VERSION,
+            before=before,
+            after={"workflow": "REJECTED", "reason": payload.reason},
+            reason=payload.reason,
+            at=at,
+        )
+    )
+    db.commit()
+    return UploadResponse(id=inv.id, existing=False)
+
+
 @app.post("/invoices/{invoice_id}/review", response_model=UploadResponse)
 def review(
     invoice_id: str, payload: ReviewRequest, workspace=Depends(mutation), db=Depends(database)
 ):
     inv = lock_for_action(db, workspace, invoice_id, payload.expected_revision)
+    if inv.workflow == "REJECTED":
+        raise HTTPException(409, REJECTED_MESSAGE)
     current_run = db.get(Run, inv.current_run)
     if current_run.state in ("QUEUED", "RUNNING"):
         raise HTTPException(
@@ -501,6 +634,13 @@ def review(
         )
         selections["po_id"] = po.id
     Extraction.model_validate(data)
+    reason = payload.reason.strip()
+    if inv.workflow == "ON_HOLD":
+        # Rerunning the checks ends the wait; the audit keeps who it was waiting on.
+        before["workflow"], after["workflow"] = "ON_HOLD", None
+        reason = f"{reason} (Hold waiting on {inv.workflow_to} cleared.)"
+        inv.workflow = inv.workflow_to = inv.workflow_note = None
+        inv.workflow_by = inv.workflow_at = None
     inv.revision += 1
     inv.human_touched = True
     run_id = uid()
@@ -515,6 +655,9 @@ def review(
                 **rev.provenance,
                 "corrections": list(corrections.values()),
                 "source_revision": rev.number,
+                # Checking again without changing anything is an AI review of the
+                # company documents; finalize records what that review found.
+                "ai_review": not (payload.corrections or payload.vendor_id or payload.po_id),
             },
         )
     )
@@ -537,7 +680,7 @@ def review(
             policy_version=POLICY_VERSION,
             before=before,
             after=after,
-            reason=payload.reason.strip(),
+            reason=reason,
         )
     )
     db.commit()
@@ -600,7 +743,8 @@ def page_image(invoice_id: str, page: int, workspace=Depends(session), db=Depend
     if not 1 <= page <= inv.pages or not inv.page_data:
         raise HTTPException(404, "The source page is still being prepared.")
     return Response(
-        storage.get(f"{workspace.id}/{invoice_id}/page-{page}.png"), media_type="image/png"
+        storage.get(storage.page_key(workspace.id, inv.id, inv.object_key, page)),
+        media_type="image/png",
     )
 
 
@@ -726,15 +870,14 @@ def scenario_file(scenario_id: str):
 @app.get("/scenarios/pack")
 def sample_pack(workspace=Depends(session)):
     instructions = (
-        "AP Review Desk - synthetic demo pack\n\n"
-        "Open the review desk and choose Demo library. All five PDFs are built in.\n"
-        "Use the eye icon to preview a PDF, Run scenario to process it, or Upload invoice\n"
-        "to upload a file from this pack. Both routes use real PDF extraction and checks.\n"
-        "Start fresh demo restores the original fictional vendor and PO balances.\n"
+        "Tickmark - synthetic sample pack\n\n"
+        "Open Tickmark and choose Add invoices to upload any PDF from this pack.\n"
+        "Uploads use real PDF extraction and the same checks as every other invoice.\n"
+        "Start a fresh workspace to restore the original fictional supplier and PO balances.\n"
         "No separate vendor or PO import is needed.\n\n"
         "Run 01-clean.pdf before 02-duplicate.pdf in the same workspace.\n"
         "PO-1042 has a $10,000 ceiling, $6,000 already accepted and $4,000 remaining.\n"
-        "For 04-ambiguous.pdf, select PO-1088 in Review & resolve and record a reason.\n"
+        "For 04-ambiguous.pdf, choose PO-1088 as the order and record a reason.\n"
         "For 05-scan-conflict.pdf, the printed $990 total disagrees with $900 of items.\n"
         "Keep it on hold and request a corrected invoice; do not change true source facts.\n\n"
         "Expected outcomes (not guaranteed extraction results):\n"
@@ -749,7 +892,7 @@ def sample_pack(workspace=Depends(session)):
     return Response(
         output.getvalue(),
         media_type="application/zip",
-        headers={"Content-Disposition": 'attachment; filename="ap-review-desk-demo.zip"'},
+        headers={"Content-Disposition": 'attachment; filename="tickmark-samples.zip"'},
     )
 
 

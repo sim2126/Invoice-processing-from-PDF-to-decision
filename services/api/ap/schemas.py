@@ -74,11 +74,74 @@ class RetryRequest(StrictModel):
     expected_revision: int = Field(ge=1)
 
 
-class Check(StrictModel):
+def meaningful(value: str, minimum: int, message: str) -> str:
+    value = value.strip()
+    if len(value) < minimum:
+        raise ValueError(message)
+    return value
+
+
+class HoldRequest(StrictModel):
+    expected_revision: int = Field(ge=1)
+    to: str = Field(min_length=2, max_length=120)
+    message: str = Field(min_length=8, max_length=4000)
+
+    @field_validator("to")
+    @classmethod
+    def recipient(cls, value):
+        return meaningful(value, 2, "Name who the invoice is waiting on.")
+
+    @field_validator("message")
+    @classmethod
+    def request(cls, value):
+        return meaningful(value, 8, "Record the request of at least 8 characters.")
+
+
+class RejectRequest(StrictModel):
+    expected_revision: int = Field(ge=1)
+    reason: str = Field(min_length=8, max_length=1000)
+
+    @field_validator("reason")
+    @classmethod
+    def meaningful_reason(cls, value):
+        return meaningful(value, 8, "Record a meaningful reason of at least 8 characters.")
+
+
+CheckState = Literal["passed", "review", "blocked", "skipped"]
+CheckGroup = Literal["document", "supplier", "po", "lines", "totals", "duplicate", "budget"]
+InvoiceStatus = Literal[
+    "CHECKING", "FAILED", "APPROVED", "NEEDS_REVIEW", "BLOCKED", "ON_HOLD", "REJECTED"
+]
+ReasonCode = Literal[
+    "nopo",
+    "budget",
+    "price",
+    "totals",
+    "duplicate",
+    "closed",
+    "inactive",
+    "nonumber",
+    "item",
+    "vendor",
+    "evidence",
+    "po",
+    "other",
+]
+
+
+class CheckRecord(StrictModel):
+    """A policy check as stored with its decision."""
+
     code: str
     title: str
-    state: Literal["passed", "review", "blocked", "skipped"]
+    state: CheckState
     message: str
+
+
+class Check(CheckRecord):
+    """A check in API responses; its group is derived, so older decisions also have one."""
+
+    group: CheckGroup
 
 
 class InvoiceRow(StrictModel):
@@ -86,6 +149,7 @@ class InvoiceRow(StrictModel):
     filename: str
     reference: str | None
     vendor: str | None
+    vendor_id: str | None = None  # the matched supplier, once a decision exists
     total: str | None
     currency: str | None
     po_reference: str | None
@@ -96,6 +160,20 @@ class InvoiceRow(StrictModel):
     created_at: str
     revision: int
     human_touched: bool
+    status: InvoiceStatus
+    invoice_date: str | None
+    due_date: str | None
+    due_assumed: bool
+    reason_code: ReasonCode | None
+    reason: str | None
+    first_reason_code: ReasonCode | None
+    first_reason: str | None
+    workflow: Literal["ON_HOLD", "REJECTED"] | None
+    workflow_to: str | None
+    workflow_note: str | None
+    workflow_by: str | None
+    workflow_at: str | None
+    source: Literal["upload", "inbox", "history"]
 
 
 class QueueResponse(StrictModel):
@@ -208,11 +286,58 @@ class Candidates(StrictModel):
     orders: list[POResponse]
 
 
+class PurchaseOrderVendor(StrictModel):
+    id: str
+    name: str
+    identifier: str
+    active: bool
+
+
+class PurchaseOrderLine(StrictModel):
+    sku: str
+    description: str
+    unit: str
+    unit_price: str
+    quantity: str
+    committed_quantity: str
+    remaining_quantity: str
+
+
+class PurchaseOrderRow(StrictModel):
+    """An order with what accepted invoices (including seeded history) have used."""
+
+    id: str
+    reference: str
+    description: str
+    status: Literal["ACTIVE", "CLOSED"]
+    currency: str
+    vendor: PurchaseOrderVendor
+    ceiling: str
+    committed: str
+    remaining: str
+    lines: list[PurchaseOrderLine]
+
+
+class InboxItem(StrictModel):
+    key: str
+    kind: Literal["invoice", "document"]
+    sender: str
+    subject: str
+    received_at: str
+    filename: str
+    invoice_id: str | None
+    document_id: str | None
+
+
 class DecisionResponse(StrictModel):
     id: str
     run_id: str
     revision: int
     outcome: str
+    # Why this decision is not approved (null when approved); the summary can
+    # name a follow-on check instead of the root cause.
+    reason_code: ReasonCode | None
+    reason: str | None
     summary: str
     next_action: str
     owner: str

@@ -1,7 +1,17 @@
-"""Reproducible synthetic documents. Labels are used only by tests/evaluation."""
+"""Reproducible synthetic documents. Labels are used only by tests/evaluation.
+
+Outputs (all generated at Docker build time, never committed):
+- fixtures/pdfs: the evaluation corpus, follow-up examples and the project reference.
+- fixtures/history: the already-processed invoices a new workspace opens with. Each has
+  its PDF, page PNGs, page data from the real document reader and a ground-truth
+  extraction whose evidence quotes are verified against that page data.
+- fixtures/inbox: new arrivals that run through the real upload pipeline when checked.
+"""
 
 import io
 import json
+import sys
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
@@ -13,7 +23,14 @@ from reportlab.pdfgen import canvas
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "fixtures" / "pdfs"
+HISTORY_OUT = ROOT / "fixtures" / "history"
+INBOX_OUT = ROOT / "fixtures" / "inbox"
 OUT.mkdir(parents=True, exist_ok=True)
+
+COMPANY = "Juniper Labs"
+COMPANY_STREET = "48 Foundry Street"
+COMPANY_CITY = "Portland, OR 97209"
+BILL_TO = f"{COMPANY}, {COMPANY_STREET}, {COMPANY_CITY}"
 
 
 def base(
@@ -195,7 +212,7 @@ followup_cases = [
             "subtitle": "Brand studio / September delivery",
             "author": "Maya Patel",
             "role": "Brand Operations Manager",
-            "reference": "NS-BRAND-0926-18",
+            "reference": "JL-BRAND-0926-18",
             "po": "PO-1088",
             "paragraphs": [
                 "The eight hours cover brand guideline refinement and preparation of the final "
@@ -231,7 +248,7 @@ followup_cases = [
             "subtitle": "Product studio / Design services",
             "author": "Daniel Brooks",
             "role": "Product Design Lead",
-            "reference": "NS-PRODUCT-0926-21",
+            "reference": "JL-PRODUCT-0926-21",
             "po": "PO-1091",
             "paragraphs": [
                 "I confirm that the twelve design hours relate to the September product "
@@ -263,11 +280,11 @@ followup_cases = [
             "subtitle": "Office refresh / Paper delivery record",
             "author": "Olivia Chen",
             "role": "Workplace Coordinator",
-            "reference": "NS-DELIVERY-0926-22",
+            "reference": "JL-DELIVERY-0926-22",
             "po": "PO-1038",
             "paragraphs": [
-                "Six cases of PAPER-A4 copy paper were delivered to Northstar Studio, "
-                "125 Workshop Lane, Portland, on 22 September 2026. Olivia Chen checked "
+                "Six cases of PAPER-A4 copy paper were delivered to Juniper Labs, "
+                "48 Foundry Street, Portland, on 22 September 2026. Olivia Chen checked "
                 "the delivery against the office refresh requisition and recorded the "
                 "quantity received as six cases.",
                 "The delivery relates to the September office refresh order. The supplier "
@@ -295,7 +312,7 @@ followup_cases = [
             "subtitle": "Equipment replenishment / Receiving confirmation",
             "author": "Nora Reed",
             "role": "IT Operations Specialist",
-            "reference": "NS-IT-RECEIPT-0926-23",
+            "reference": "JL-IT-RECEIPT-0926-23",
             "po": "PO-1103",
             "paragraphs": [
                 "Two 27-inch monitors, item MONITOR-27, were received by the IT operations "
@@ -326,7 +343,7 @@ followup_cases = [
             "subtitle": "Workspace essentials / Allocation with a budget shortfall",
             "author": "Maya Patel",
             "role": "Procurement Coordinator",
-            "reference": "NS-PROCUREMENT-0926-24",
+            "reference": "JL-PROCUREMENT-0926-24",
             "po": "PO-1042",
             "paragraphs": [
                 "The forty-five cases of PAPER-A4 copy paper relate to the workspace "
@@ -369,9 +386,9 @@ def draw_followup_invoice(c, d):
     ]:
         c.drawString(42, y, f"{label}: {value}")
     c.setFont("Helvetica-Bold", 11)
-    c.drawString(42, 585, "Bill to: Northstar Studio")
+    c.drawString(42, 585, f"Bill to: {COMPANY}")
     c.setFont("Helvetica", 10)
-    c.drawString(42, 568, "125 Workshop Lane, Portland, OR")
+    c.drawString(42, 568, f"{COMPANY_STREET}, {COMPANY_CITY}")
     c.line(42, 550, 570, 550)
     c.setFont("Helvetica-Bold", 12)
     c.drawString(42, 529, "Invoice item")
@@ -463,14 +480,14 @@ def draw(c, d, page=1):
     ]
     if layout == 5:
         # Held-out layout: metadata in right column, recipient in left.
-        c.drawString(42, 690, "Billed to Northstar Studio")
-        c.drawString(42, 672, "125 Workshop Lane, Portland, OR")
+        c.drawString(42, 690, f"Billed to {COMPANY}")
+        c.drawString(42, 672, f"{COMPANY_STREET}, {COMPANY_CITY}")
     for label, value in fields:
         if value is not None:
             c.drawString(310 if layout == 5 else 42, y, f"{label}: {value}")
             y -= 19
     if layout != 5:
-        c.drawString(42, y - 12, "Bill to: Northstar Studio, 125 Workshop Lane, Portland, OR")
+        c.drawString(42, y - 12, f"Bill to: {BILL_TO}")
     y = 513
     c.setFillColor(HexColor("#EDF0EB"))
     c.rect(42, y - 6, 528, 27, fill=1, stroke=0)
@@ -529,6 +546,21 @@ def draw(c, d, page=1):
     c.drawRightString(568, 57, f"Page {page}")
 
 
+def rasterize(data, degraded=False):
+    """A real scan: every page becomes a grayscale image with no text layer."""
+    out = io.BytesIO()
+    c = canvas.Canvas(out, pagesize=(612, 792), invariant=1)
+    with pdfium.PdfDocument(data) as pdf:
+        for page in pdf:
+            image = page.render(scale=2).to_pil().convert("L")
+            if degraded:
+                image = image.filter(ImageFilter.GaussianBlur(0.45))
+            c.drawImage(ImageReader(image), 0, 0, width=612, height=792)
+            c.showPage()
+    c.save()
+    return out.getvalue()
+
+
 def generate(filename, d):
     buf = io.BytesIO()
     c = canvas.Canvas(buf, pagesize=(612, 792), invariant=1)
@@ -539,17 +571,7 @@ def generate(filename, d):
     c.save()
     data = buf.getvalue()
     if d.get("scan"):
-        out = io.BytesIO()
-        c = canvas.Canvas(out, pagesize=(612, 792), invariant=1)
-        with pdfium.PdfDocument(data) as pdf:
-            for page in pdf:
-                image = page.render(scale=2).to_pil().convert("L")
-                if d.get("degraded"):
-                    image = image.filter(ImageFilter.GaussianBlur(0.45))
-                c.drawImage(ImageReader(image), 0, 0, width=612, height=792)
-                c.showPage()
-        c.save()
-        data = out.getvalue()
+        data = rasterize(data, d.get("degraded"))
     (OUT / filename).write_bytes(data)
     # Render the actual PDF once at build time for the in-app sample preview.
     # Previewing a sample must not upload it or call the extraction model.
@@ -568,10 +590,10 @@ def generate(filename, d):
 def generate_followup_reference(invoice, reference):
     c = canvas.Canvas(str(OUT / reference["file"]), pagesize=(612, 792), invariant=1)
     c.setTitle(reference["title"])
-    c.setAuthor("Northstar Studio - fictional example")
+    c.setAuthor(f"{COMPANY} - fictional example")
     c.setFillColor(HexColor("#092F39"))
     c.setFont("Helvetica-Bold", 12)
-    c.drawString(42, 744, "NORTHSTAR STUDIO")
+    c.drawString(42, 744, COMPANY.upper())
     c.setFont("Helvetica", 9)
     c.drawRightString(570, 744, "PROCUREMENT RECORDS")
     c.setStrokeColor(HexColor("#D8E2E5"))
@@ -626,16 +648,20 @@ def generate_followup_reference(invoice, reference):
             page.close()
 
 
-def generate_project_reference():
-    c = canvas.Canvas(str(OUT / "project-assignment.pdf"), pagesize=(612, 792), invariant=1)
+def generate_project_reference(
+    path=OUT / "project-assignment.pdf", recorded="15 September 2026", sample_footer=True
+):
+    """The MER-2081 assignment; its wording is what grounded PO matching validates."""
+    c = canvas.Canvas(str(path), pagesize=(612, 792), invariant=1)
     c.setTitle("Project assignment reference")
+    c.setAuthor(COMPANY)
     c.setFillColor(HexColor("#092F39"))
     c.setFont("Helvetica-Bold", 24)
     c.drawString(42, 728, "Project assignment")
     c.setFont("Helvetica", 12)
     lines = [
-        "Northstar Studio | Procurement records",
-        "Recorded by Maya Patel | 15 September 2026",
+        f"{COMPANY} | Procurement records",
+        f"Recorded by Maya Patel | {recorded}",
         "Invoice MER-2081 from supplier MERIDIAN-002 (Meridian Creative)",
         "is assigned to PO-1088 for the Brand studio September project.",
         "Scope: 20 hours of design services at USD 100.00 per hour.",
@@ -644,8 +670,744 @@ def generate_project_reference():
     for index, line in enumerate(lines):
         c.drawString(42, 675 - index * 32, line)
     c.setFont("Helvetica", 8)
-    c.drawString(42, 57, "SYNTHETIC REFERENCE | FICTIONAL PROJECT | FOR DEMONSTRATION ONLY")
+    if sample_footer:
+        c.drawString(42, 57, "SYNTHETIC REFERENCE | FICTIONAL PROJECT | FOR DEMONSTRATION ONLY")
+    else:
+        c.setFillColor(HexColor("#55576A"))
+        c.drawString(42, 57, f"{COMPANY} · {COMPANY_STREET} · {COMPANY_CITY}")
     c.save()
+
+
+# ---------------------------------------------------------------------------
+# Workspace history and inbox. Every supplier has its own layout; all invoices
+# label each field and print units in their own column so values are citable.
+# ---------------------------------------------------------------------------
+
+INK = HexColor("#1D1F27")
+MUTED = HexColor("#5B5D6B")
+HAIRLINE = HexColor("#DEDDD7")
+PANEL = HexColor("#F3F2EE")
+WHITE = HexColor("#FFFFFF")
+CENT = Decimal("0.01")
+
+SUPPLIERS = {
+    "ALDER-001": {
+        "name": "Alder Office Supply",
+        "address": "220 Pine Street · Portland, OR 97204",
+        "contact": "ar@alderoffice.com · (503) 555-0142",
+        "layout": "band",
+        "accent": "#1E4D3B",
+        "item": ("PAPER-A4", "Copy paper, case", "case", "100.00"),
+    },
+    "MERIDIAN-002": {
+        "name": "Meridian Creative",
+        "address": "77 Hawthorne Court · Portland, OR 97214",
+        "contact": "studio@meridiancreative.co",
+        "layout": "serif",
+        "accent": "#1D1F27",
+        "item": ("DESIGN-HR", "Design services", "hour", "100.00"),
+    },
+    "FIELD-003": {
+        "name": "Fieldwork Equipment",
+        "address": "1450 Industrial Way · Tualatin, OR 97062",
+        "contact": "accounts@fieldworkequipment.com",
+        "layout": "plain",
+        "accent": "#2F4858",
+        "item": ("MONITOR-27", "27-inch monitor", "unit", "300.00"),
+    },
+    "HARBOR-004": {
+        "name": "Harbor Services",
+        "address": "9 Riverside Drive · Vancouver, WA 98660",
+        "contact": "billing@harborservices.net",
+        "layout": "plain",
+        "accent": "#5A4636",
+        "item": ("REPAIR-HR", "Facility repairs", "hour", "65.00"),
+    },
+    "COAST-005": {
+        "name": "Coastline Freight",
+        "address": "3100 Marine Drive · Portland, OR 97217",
+        "contact": "billing@coastlinefreight.com",
+        "layout": "ledger",
+        "accent": "#0F5E7A",
+        "item": ("FREIGHT-LTL", "LTL shipment, Portland", "shipment", "450.00"),
+    },
+    "BRIGHT-006": {
+        "name": "Brightwave Cloud",
+        "address": "500 Market Street · San Francisco, CA 94105",
+        "contact": "billing@brightwave.cloud",
+        "layout": "modern",
+        "accent": "#4B3FD9",
+        "item": ("SEAT-PRO", "Pro seat, monthly", "seat-month", "40.00"),
+        "due": True,
+    },
+    "PINE-007": {
+        "name": "Pinecrest Facilities",
+        "address": "18 Cedar Lane · Beaverton, OR 97005",
+        "contact": "accounts@pinecrestfacilities.com",
+        "layout": "ledger",
+        "accent": "#3D6B35",
+        "item": ("CLEAN-WK", "Office cleaning, weekly", "week", "600.00"),
+        "due": True,
+    },
+    "LUMEN-008": {
+        "name": "Lumen Print Co.",
+        "address": "62 Press Row · Portland, OR 97214",
+        "contact": "orders@lumenprint.co",
+        "layout": "rule",
+        "accent": "#7A4A2A",
+        "item": ("PRINT-BRO", "Product brochure, A5", "brochure", "1.20"),
+    },
+}
+
+# Received times are UTC. Invoice date = received date unless noted. Expected
+# outcomes are labels for tests; seeding decides with the real rules engine.
+HISTORY = [
+    dict(received="2026-09-22T09:12", number="ALD-1101", vendor="ALDER-001", po="PO-1042", qty=35),
+    dict(received="2026-09-23T11:40", number="CF-7712", vendor="COAST-005", po="PO-1120", qty=2),
+    dict(
+        received="2026-09-24T14:05", number="MER-2040", vendor="MERIDIAN-002", po="PO-1088", qty=24
+    ),
+    dict(received="2026-09-25T08:31", number="BW-0921", vendor="BRIGHT-006", po="PO-1124", qty=30),
+    dict(received="2026-09-25T10:18", number="FW-3051", vendor="FIELD-003", po="PO-1103", qty=12),
+    dict(
+        received="2026-09-26T15:52",
+        number="ALD-1159",
+        vendor="ALDER-001",
+        po="PO-0999",
+        qty=4,
+        expected="BLOCKED",
+    ),
+    dict(received="2026-09-26T16:47", number="CF-7745", vendor="COAST-005", po="PO-1120", qty=3),
+    dict(
+        received="2026-09-30T13:22",
+        number="MER-2055",
+        vendor="MERIDIAN-002",
+        po=None,
+        qty=16,
+        expected="NEEDS_REVIEW",
+        actions=[
+            dict(
+                kind="review",
+                at="2026-09-30T16:05",
+                by="Priya Nair",
+                po="PO-1091",
+                reason="Product team confirmed the work belongs to the product studio order.",
+                expected="APPROVED",
+            )
+        ],
+    ),
+    dict(received="2026-09-30T10:02", number="PF-3301", vendor="PINE-007", po="PO-1131", qty=4),
+    dict(received="2026-10-02T12:15", number="LP-5520", vendor="LUMEN-008", po="PO-1135", qty=2000),
+    dict(received="2026-10-07T09:05", number="ALD-1144", vendor="ALDER-001", po="PO-1042", qty=25),
+    dict(
+        received="2026-10-08T11:11",
+        number="HS-0412",
+        vendor="HARBOR-004",
+        po=None,
+        qty=12,
+        expected="BLOCKED",
+    ),
+    dict(received="2026-10-09T14:44", number="FW-3077", vendor="FIELD-003", po="PO-1103", qty=6),
+    dict(received="2026-10-10T10:26", number="CF-7768", vendor="COAST-005", po="PO-1120", qty=2),
+    dict(
+        received="2026-10-13T09:58",
+        number="PF-3329",
+        vendor="PINE-007",
+        po=None,
+        qty=2,
+        expected="NEEDS_REVIEW",
+        actions=[
+            dict(
+                kind="review",
+                at="2026-10-13T11:20",
+                by="Priya Nair",
+                po="PO-1131",
+                reason="October cleaning; confirmed with Facilities that it belongs to the Q4 order.",
+                expected="APPROVED",
+            )
+        ],
+    ),
+    dict(
+        received="2026-10-14T15:31", number="MER-2069", vendor="MERIDIAN-002", po="PO-1088", qty=32
+    ),
+    dict(received="2026-10-15T08:54", number="CF-7781", vendor="COAST-005", po="PO-1120", qty=2),
+    dict(
+        received="2026-10-16T13:09",
+        number=None,
+        vendor="FIELD-003",
+        po="PO-1103",
+        qty=2,
+        expected="NEEDS_REVIEW",
+        filename="fieldwork-oct-16.pdf",
+        actions=[
+            dict(
+                kind="hold",
+                at="2026-10-16T15:40",
+                by="Prabhakar Kumar",
+                to="Fieldwork Equipment",
+                message="Asked Fieldwork for a corrected invoice that carries an invoice number.",
+            )
+        ],
+    ),
+    dict(received="2026-10-19T08:30", number="BW-1021", vendor="BRIGHT-006", po="PO-1124", qty=30),
+    dict(
+        received="2026-10-20T16:12",
+        number="LP-5538",
+        vendor="LUMEN-008",
+        po="PO-1135",
+        qty=2200,
+        expected="NEEDS_REVIEW",
+    ),
+    dict(
+        received="2026-10-21T10:41",
+        number="CF-7790",
+        vendor="COAST-005",
+        po="PO-1120",
+        qty=1,
+        price="462.00",
+        expected="NEEDS_REVIEW",
+    ),
+    dict(
+        received="2026-10-22T09:03",
+        number="BW-1021",
+        vendor="BRIGHT-006",
+        po="PO-1124",
+        qty=30,
+        date="2026-10-19",
+        layout="rule",
+        expected="BLOCKED",
+        filename="brightwave-oct-resend.pdf",
+    ),
+    dict(
+        received="2026-10-22T11:37", number="MER-2077", vendor="MERIDIAN-002", po="PO-1091", qty=12
+    ),
+    dict(received="2026-10-23T14:20", number="CF-7802", vendor="COAST-005", po="PO-1120", qty=3),
+    dict(received="2026-10-24T09:15", number="PF-3342", vendor="PINE-007", po="PO-1131", qty=4),
+    dict(received="2026-10-26T16:02", number="ALD-1201", vendor="ALDER-001", po="PO-1038", qty=12),
+]
+# Seconds each history run took; kept so run timestamps look like real processing.
+HISTORY_SECONDS = (
+    "9.8 8.1 11.2 7.6 13.9 9.1 8.4 12.6 10.3 12.0 9.4 8.8 14.7 "
+    "7.9 11.5 10.9 7.7 12.2 7.4 11.8 8.6 7.9 10.4 8.0 9.9 9.6"
+).split()
+
+INBOX_DATE = "2026-10-26"
+INBOX = [
+    dict(
+        key="clean",
+        time="07:42",
+        sender="billing@coastlinefreight.com",
+        subject="Invoice CF-7815 · Portland LTL, 2 shipments",
+        filename="coastline-cf-7815.pdf",
+        invoice=dict(number="CF-7815", vendor="COAST-005", po="PO-1120", qty=2),
+        expected="APPROVED",
+    ),
+    dict(
+        key="tolerance",
+        time="08:05",
+        sender="ar@alderoffice.com",
+        subject="ALD-1202 · copy paper for the office refresh",
+        filename="alder-ald-1202.pdf",
+        invoice=dict(number="ALD-1202", vendor="ALDER-001", po="PO-1038", qty=10, price="100.80"),
+        expected="APPROVED",
+    ),
+    dict(
+        key="duplicate",
+        time="08:11",
+        sender="ar@alderoffice.com",
+        subject="Resending invoice ALD-1201",
+        filename="alder-ald-1201-resend.pdf",
+        invoice=dict(number="ALD-1201", vendor="ALDER-001", po="PO-1038", qty=12, layout="serif"),
+        expected="BLOCKED",
+    ),
+    dict(
+        key="budget",
+        time="08:26",
+        sender="ar@alderoffice.com",
+        subject="Invoice ALD-1450 · workspace essentials",
+        filename="alder-ald-1450.pdf",
+        invoice=dict(number="ALD-1450", vendor="ALDER-001", po="PO-1042", qty=45, layout="rule"),
+        expected="NEEDS_REVIEW",
+    ),
+    dict(
+        key="nopo",
+        time="08:48",
+        sender="studio@meridiancreative.co",
+        subject="Meridian Creative · October design hours",
+        filename="meridian-mer-2081.pdf",
+        invoice=dict(number="MER-2081", vendor="MERIDIAN-002", po=None, qty=20),
+        expected="NEEDS_REVIEW",
+    ),
+    dict(
+        key="scan",
+        time="09:15",
+        sender="accounts@fieldworkequipment.com",
+        subject="Scanned invoice FW-3099",
+        filename="fieldwork-fw-3099-scan.pdf",
+        invoice=dict(
+            number="FW-3099",
+            vendor="FIELD-003",
+            po="PO-1103",
+            qty=3,
+            total="990.00",
+            layout="scan",
+            scan=True,
+        ),
+        expected="NEEDS_REVIEW",
+    ),
+    dict(
+        key="assignment",
+        time="09:32",
+        sender="maya.patel@juniperlabs.com",
+        subject="Re: MER-2081 · project assignment",
+        filename="mer-2081-project-assignment.pdf",
+    ),
+]
+
+
+def money_text(value):
+    return f"{value:,.2f}"
+
+
+def invoice_facts(spec, invoice_date):
+    supplier = SUPPLIERS[spec["vendor"]]
+    sku, description, unit, order_price = supplier["item"]
+    price = Decimal(spec.get("price") or order_price)
+    quantity = Decimal(spec["qty"])
+    amount = (quantity * price).quantize(CENT)
+    total = Decimal(spec["total"]) if spec.get("total") else amount
+    due = (
+        (date.fromisoformat(invoice_date) + timedelta(days=30)).isoformat()
+        if supplier.get("due")
+        else None
+    )
+    return {
+        "supplier": supplier,
+        "vendor_id": spec["vendor"],
+        "number": spec.get("number"),
+        "date": invoice_date,
+        "due": due,
+        "po": spec.get("po"),
+        "sku": sku,
+        "description": description,
+        "unit": unit,
+        "quantity": quantity,
+        "price": price,
+        "amount": amount,
+        "tax": Decimal("0.00"),
+        "total": total,
+        "layout": spec.get("layout") or supplier["layout"],
+        "scan": bool(spec.get("scan")),
+        # Printed forms, used verbatim as evidence quotes.
+        "quantity_text": f"{int(quantity):,}",
+        "price_text": money_text(price),
+        "amount_text": money_text(amount),
+        "total_text": money_text(total),
+        "tax_text": "0.00",
+    }
+
+
+def draw_supplier_header(c, f):
+    """Each supplier's own letterhead. Returns the baseline where details start."""
+    s, layout = f["supplier"], f["layout"]
+    accent = HexColor(s["accent"])
+    if layout == "band":
+        c.setFillColor(accent)
+        c.rect(0, 706, 612, 86, fill=1, stroke=0)
+        c.setFillColor(WHITE)
+        c.setFont("Helvetica-Bold", 21)
+        c.drawString(48, 748, s["name"])
+        c.setFont("Helvetica", 9)
+        c.drawString(48, 729, s["address"])
+        c.setFont("Helvetica-Bold", 12)
+        c.drawRightString(564, 750, "INVOICE")
+        c.setFont("Helvetica", 9)
+        c.drawRightString(564, 729, s["contact"])
+        return 672
+    if layout == "serif":
+        c.setFillColor(INK)
+        c.setFont("Times-Bold", 25)
+        c.drawString(48, 738, s["name"])
+        c.setFont("Times-Roman", 10)
+        c.setFillColor(MUTED)
+        c.drawString(48, 720, s["address"])
+        c.setFillColor(INK)
+        c.setFont("Times-Roman", 14)
+        c.drawRightString(564, 741, "INVOICE")
+        c.setLineWidth(1.6)
+        c.setStrokeColor(INK)
+        c.line(48, 706, 564, 706)
+        return 678
+    if layout == "rule":
+        c.setFillColor(accent)
+        c.rect(48, 752, 516, 5, fill=1, stroke=0)
+        c.setFont("Helvetica-Bold", 19)
+        c.drawString(48, 722, s["name"])
+        c.setFillColor(MUTED)
+        c.setFont("Helvetica", 9)
+        c.drawString(48, 707, s["address"])
+        c.setFillColor(INK)
+        c.setFont("Helvetica-Bold", 11)
+        c.drawRightString(564, 724, "INVOICE")
+        return 672
+    if layout == "ledger":
+        c.setFillColor(accent)
+        c.setFont("Helvetica-Bold", 19)
+        c.drawString(48, 738, s["name"])
+        c.setFillColor(MUTED)
+        c.setFont("Helvetica", 9)
+        c.drawString(48, 722, s["address"])
+        c.drawString(48, 710, s["contact"])
+        c.setFillColor(INK)
+        c.setFont("Helvetica", 24)
+        c.drawRightString(564, 734, "Invoice")
+        c.setFillColor(PANEL)
+        c.roundRect(40, 580, 532, 112, 6, fill=1, stroke=0)
+        return 670
+    if layout == "modern":
+        c.setFillColor(accent)
+        c.rect(0, 0, 12, 792, fill=1, stroke=0)
+        c.setFillColor(INK)
+        c.setFont("Helvetica-Bold", 28)
+        c.drawString(48, 734, "Invoice")
+        c.setFillColor(accent)
+        c.setFont("Helvetica-Bold", 14)
+        c.drawRightString(564, 742, s["name"])
+        c.setFillColor(MUTED)
+        c.setFont("Helvetica", 9)
+        c.drawRightString(564, 727, s["address"])
+        c.drawRightString(564, 715, s["contact"])
+        return 678
+    if layout == "scan":
+        c.setFillColor(HexColor("#F2F0E8"))
+        c.rect(0, 0, 612, 792, fill=1, stroke=0)
+        c.setFillColor(INK)
+        c.setFont("Courier-Bold", 17)
+        c.drawString(48, 740, s["name"].upper())
+        c.setFont("Courier", 9)
+        c.drawString(48, 724, s["address"])
+        c.setFont("Courier-Bold", 13)
+        c.drawRightString(564, 741, "TAX INVOICE")
+        c.setStrokeColor(INK)
+        c.setLineWidth(1)
+        c.line(48, 708, 564, 708)
+        return 680
+    # plain
+    c.setFillColor(INK)
+    c.setFont("Helvetica-Bold", 18)
+    c.drawString(48, 740, s["name"])
+    c.setFillColor(MUTED)
+    c.setFont("Helvetica", 9)
+    c.drawString(48, 724, f"{s['address']} · {s['contact']}")
+    c.setFillColor(INK)
+    c.setFont("Helvetica-Bold", 10)
+    c.drawRightString(564, 742, "INVOICE")
+    c.setStrokeColor(HAIRLINE)
+    c.setLineWidth(1)
+    c.line(48, 708, 564, 708)
+    return 678
+
+
+def draw_supplier_invoice(c, f):
+    """Labelled fields and a Unit column keep every value easy to read and cite."""
+    layout = f["layout"]
+    font, bold = {
+        "serif": ("Times-Roman", "Times-Bold"),
+        "scan": ("Courier", "Courier-Bold"),
+    }.get(layout, ("Helvetica", "Helvetica-Bold"))
+    top = draw_supplier_header(c, f)
+    y = top
+    for label, value in [
+        ("Vendor ID", f["vendor_id"]),
+        ("Invoice number", f["number"]),
+        ("Invoice date", f["date"]),
+        ("Due date", f["due"]),
+        ("Purchase order", f["po"]),
+        ("Currency", "USD"),
+    ]:
+        if value is None:
+            continue
+        c.setFillColor(MUTED)
+        c.setFont(font, 9.5)
+        c.drawString(56, y, f"{label}:")
+        c.setFillColor(INK)
+        c.setFont(bold, 9.5)
+        c.drawString(150, y, value)
+        y -= 15
+    c.setFillColor(INK)
+    c.setFont(bold, 9.5)
+    c.drawRightString(556, top, "Bill to")
+    c.setFont(font, 9.5)
+    for index, text in enumerate([COMPANY, COMPANY_STREET, COMPANY_CITY]):
+        c.drawRightString(556, top - 15 * (index + 1), text)
+    header = min(y, top - 60) - 34
+    if layout in ("band", "rule", "modern"):
+        c.setFillColor(PANEL if layout != "band" else HexColor("#E8EFEC"))
+        c.rect(48, header - 8, 516, 23, fill=1, stroke=0)
+    else:
+        c.setStrokeColor(INK if layout in ("serif", "scan") else HAIRLINE)
+        c.setLineWidth(1)
+        c.line(48, header + 15, 564, header + 15)
+        c.line(48, header - 8, 564, header - 8)
+    c.setFillColor(INK)
+    c.setFont(bold, 8.5)
+    c.drawString(56, header, "Item")
+    c.drawString(146, header, "Description")
+    c.drawRightString(358, header, "Quantity")
+    c.drawString(372, header, "Unit")
+    c.drawRightString(482, header, "Unit price")
+    c.drawRightString(556, header, "Amount")
+    row = header - 30
+    c.setFont(bold, 10)
+    c.drawString(56, row, f["sku"])
+    c.setFont(font, 10)
+    c.drawString(146, row, f["description"])
+    c.drawRightString(358, row, f["quantity_text"])
+    c.drawString(372, row, f["unit"])
+    c.drawRightString(482, row, f["price_text"])
+    c.drawRightString(556, row, f["amount_text"])
+    c.setStrokeColor(HAIRLINE if layout not in ("serif", "scan") else INK)
+    c.setLineWidth(0.8)
+    c.line(48, row - 14, 564, row - 14)
+    totals = row - 44
+    for index, (label, value) in enumerate(
+        [("Subtotal", f["amount_text"]), ("Tax (0%)", f["tax_text"])]
+    ):
+        c.setFont(font, 10)
+        c.drawString(380, totals - 18 * index, label)
+        c.drawRightString(556, totals - 18 * index, value)
+    grand = totals - 46
+    c.setStrokeColor(INK)
+    c.setLineWidth(1.2)
+    c.line(380, grand + 16, 564, grand + 16)
+    c.setFont(bold, 12)
+    c.drawString(380, grand, "Total USD")
+    c.drawRightString(556, grand, f["total_text"])
+    c.setFillColor(MUTED)
+    c.setFont(font, 9)
+    note = (
+        "Prices exclude tax. Thank you for your business. Remit within 30 days."
+        if layout == "scan"
+        else "Payment terms: Net 30 · Prices exclude tax."
+    )
+    c.drawString(56, grand - 48, note)
+    c.setStrokeColor(HAIRLINE)
+    c.setLineWidth(0.8)
+    c.line(48, 84, 564, 84)
+    c.setFont(font, 8.5)
+    c.drawString(56, 66, f"Questions about this invoice: {f['supplier']['contact']}")
+
+
+def render_supplier_invoice(f):
+    buf = io.BytesIO()
+    c = canvas.Canvas(buf, pagesize=(612, 792), invariant=1)
+    c.setTitle(f"Invoice {f['number'] or ''}".strip())
+    c.setAuthor(f["supplier"]["name"])
+    draw_supplier_invoice(c, f)
+    c.showPage()
+    c.save()
+    data = buf.getvalue()
+    return rasterize(data) if f["scan"] else data
+
+
+def reader_tools():
+    """Page data and evidence use the application's own reader and verifier."""
+    sys.path.insert(0, str(ROOT / "services" / "api"))
+    from ap.documents import quote_hits, read_document, value_supported, verify_evidence
+    from ap.schemas import Extraction
+
+    return read_document, quote_hits, value_supported, verify_evidence, Extraction
+
+
+def ground_truth(f, pages, tools):
+    """The extraction a careful reader would return, with quotes found on the page.
+
+    Without pages (a scan before OCR) the printed text is quoted unverified.
+    """
+    _, quote_hits, value_supported, verify_evidence, extraction_model = tools
+    page = pages[0] if pages else None
+
+    def cite(field, value, candidates, raw):
+        if page is None:
+            return {"field": field, "page": 1, "quote": candidates[0], "raw": raw}
+        # Prefer a quote that occurs exactly once so it also gets a highlight box.
+        for unique in (True, False):
+            for quote in candidates:
+                hits = quote_hits(page, quote)
+                if (len(hits) == 1 if unique else hits) and value_supported(value, quote, field):
+                    return {"field": field, "page": 1, "quote": quote, "raw": raw}
+        raise SystemExit(f"No observed quote for {field} on invoice {f['number']}")
+
+    name = f["supplier"]["name"]
+    quantity, unit = f["quantity_text"], f["unit"]
+    data = {
+        "vendor_name": name,
+        "vendor_identifier": f["vendor_id"],
+        "invoice_number": f["number"],
+        "invoice_date": f["date"],
+        "due_date": f["due"],
+        "po_reference": f["po"],
+        "currency": "USD",
+        "subtotal": str(f["amount"]),
+        "header_discount": None,
+        "shipping": None,
+        "tax": str(f["tax"]),
+        "tax_rate": "0",
+        "total": str(f["total"]),
+        "tax_treatment": "exclusive",
+        "document_kind": "invoice",
+        "invoice_count": 1,
+        "po_references": [f["po"]] if f["po"] else [],
+        "lines": [
+            {
+                "description": f["description"],
+                "sku": f["sku"],
+                "quantity": str(f["quantity"]),
+                "unit": unit,
+                "unit_price": str(f["price"]),
+                "discount": None,
+                "total": str(f["amount"]),
+            }
+        ],
+        "evidence": [],
+        "warnings": [],
+    }
+    citations = [
+        ("vendor_name", name, [name], name),
+        ("vendor_identifier", f["vendor_id"], [f"Vendor ID: {f['vendor_id']}"], f["vendor_id"]),
+        ("invoice_number", f["number"], [f"Invoice number: {f['number']}"], f["number"]),
+        ("invoice_date", f["date"], [f"Invoice date: {f['date']}"], f["date"]),
+        ("due_date", f["due"], [f"Due date: {f['due']}"], f["due"]),
+        ("po_reference", f["po"], [f"Purchase order: {f['po']}"], f["po"]),
+        ("currency", "USD", ["Currency: USD"], "USD"),
+        ("subtotal", data["subtotal"], [f"Subtotal {f['amount_text']}"], f["amount_text"]),
+        ("tax", data["tax"], [f"Tax (0%) {f['tax_text']}"], f["tax_text"]),
+        ("tax_rate", "0", [f"Tax (0%) {f['tax_text']}", "Tax (0%)"], "0%"),
+        ("total", data["total"], [f"Total USD {f['total_text']}"], f["total_text"]),
+        ("lines.0.sku", f["sku"], [f["sku"]], f["sku"]),
+        ("lines.0.description", f["description"], [f["description"]], f["description"]),
+        ("lines.0.quantity", str(f["quantity"]), [f"{quantity} {unit}"], quantity),
+        ("lines.0.unit", unit, [f"{quantity} {unit}"], unit),
+        (
+            "lines.0.unit_price",
+            str(f["price"]),
+            [f["price_text"], f"{unit} {f['price_text']}"],
+            f["price_text"],
+        ),
+        (
+            "lines.0.total",
+            str(f["amount"]),
+            [f["amount_text"], f"{f['price_text']} {f['amount_text']}"],
+            f["amount_text"],
+        ),
+    ]
+    data["evidence"] = [
+        cite(field, value, candidates, raw)
+        for field, value, candidates, raw in citations
+        if value is not None
+    ]
+    extraction_model.model_validate(data)
+    if page is None:
+        return data
+    evidence = verify_evidence(data, pages)
+    unverified = [e["field"] for e in evidence if e["status"] != "observed"]
+    if unverified:
+        raise SystemExit(f"Invoice {f['number']}: evidence not observed for {unverified}")
+    return data
+
+
+def clear(directory):
+    directory.mkdir(parents=True, exist_ok=True)
+    for path in directory.iterdir():
+        if path.is_file():
+            path.unlink()
+
+
+def generate_history(tools):
+    read_document = tools[0]
+    clear(HISTORY_OUT)
+    items = []
+    for index, (spec, seconds) in enumerate(zip(HISTORY, HISTORY_SECONDS, strict=True), 1):
+        received = datetime.fromisoformat(spec["received"] + ":00+00:00")
+        f = invoice_facts(spec, spec.get("date") or received.date().isoformat())
+        first_word = f["supplier"]["name"].split()[0].lower()
+        filename = spec.get("filename") or f"{first_word}-{f['number'].lower()}.pdf"
+        stem = f"{index:02d}-{filename.removesuffix('.pdf')}"
+        pdf = render_supplier_invoice(f)
+        pages, images = read_document(pdf)
+        (HISTORY_OUT / f"{stem}.pdf").write_bytes(pdf)
+        for number, image in enumerate(images, 1):
+            (HISTORY_OUT / f"{stem}.page-{number}.png").write_bytes(image)
+        (HISTORY_OUT / f"{stem}.pages.json").write_text(json.dumps(pages), encoding="utf-8")
+        extraction = ground_truth(f, pages, tools)
+        (HISTORY_OUT / f"{stem}.extraction.json").write_text(
+            json.dumps(extraction, indent=1), encoding="utf-8"
+        )
+        actions = []
+        for action in spec.get("actions", []):
+            at = datetime.fromisoformat(action["at"] + ":00+00:00")
+            actions.append({**action, "at": at.isoformat()})
+        items.append(
+            {
+                "index": index,
+                "file": f"{stem}.pdf",
+                "filename": filename,
+                "pages": len(pages),
+                "page_images": [f"{stem}.page-{n}.png" for n in range(1, len(pages) + 1)],
+                "page_data": f"{stem}.pages.json",
+                "extraction": f"{stem}.extraction.json",
+                "received_at": received.isoformat(),
+                "seconds": float(seconds),
+                "invoice_number": f["number"],
+                "vendor_identifier": f["vendor_id"],
+                "po_reference": f["po"],
+                "total": str(f["total"]),
+                "expected": spec.get("expected", "APPROVED"),
+                "actions": actions,
+            }
+        )
+    (HISTORY_OUT / "manifest.json").write_text(
+        json.dumps({"version": "history-1", "items": items}, indent=2), encoding="utf-8"
+    )
+    return items
+
+
+def generate_inbox(tools):
+    read_document = tools[0]
+    clear(INBOX_OUT)
+    entries, labels = [], {}
+    for item in INBOX:
+        path = INBOX_OUT / item["filename"]
+        if "invoice" in item:
+            f = invoice_facts(item["invoice"], INBOX_DATE)
+            pdf = render_supplier_invoice(f)
+            path.write_bytes(pdf)
+            # A scan needs OCR, which exists in the runtime image; label it from
+            # the printed facts without verifying quotes at build time.
+            pages = [] if f["scan"] else read_document(pdf)[0]
+            labels[item["key"]] = {
+                "expected": item["expected"],
+                "ocr": f["scan"],
+                "extraction": ground_truth(f, pages, tools),
+            }
+        else:
+            generate_project_reference(path, recorded="26 October 2026", sample_footer=False)
+        entries.append(
+            {
+                "key": item["key"],
+                "kind": "invoice" if "invoice" in item else "document",
+                "sender": item["sender"],
+                "subject": item["subject"],
+                "time": item["time"],
+                "filename": item["filename"],
+            }
+        )
+    (INBOX_OUT / "manifest.json").write_text(
+        json.dumps({"version": "inbox-1", "items": entries}, indent=2), encoding="utf-8"
+    )
+    # Test-only labels; the runtime only reads manifest.json and the PDFs.
+    (INBOX_OUT / "labels.json").write_text(json.dumps(labels, indent=1), encoding="utf-8")
+    return entries
 
 
 if __name__ == "__main__":
@@ -661,5 +1423,10 @@ if __name__ == "__main__":
         ),
         encoding="utf-8",
     )
+    tools = reader_tools()
+    history = generate_history(tools)
+    inbox = generate_inbox(tools)
     print(f"Generated {len(cases)} PDFs, five layouts, five held-out documents.")
     print(f"Generated {len(followup_cases)} separate invoice and follow-up reference pairs.")
+    print(f"Generated {len(history)} history invoices with verified evidence.")
+    print(f"Generated {len(inbox)} inbox arrivals.")

@@ -997,15 +997,23 @@ def test_expired_worker_lease_recovers_without_duplicate_commitment(workspace, f
 
 
 def test_events_persist_monotonic_and_resume(workspace, facts):
+    from ap.checks import GROUPS
     from ap.main import events_payload
 
     record = pending(workspace[0], facts)
     finish(record)
     with Session() as db:
         events = events_payload(db, record[0])
-        assert len(events) == 2
-        assert events[1].id > events[0].id
-        assert [e.id for e in events_payload(db, record[0], events[0].id)] == [events[1].id]
+        # Finalize records each check group just before the decision.
+        assert [e.stage for e in events] == [
+            "checks",
+            *(f"check:{group}" for group in GROUPS),
+            "decision",
+        ]
+        assert all(later.id > earlier.id for earlier, later in zip(events, events[1:]))
+        assert [e.id for e in events_payload(db, record[0], events[0].id)] == [
+            e.id for e in events[1:]
+        ]
 
 
 def test_detail_uses_consistent_snapshot_during_finalization(workspace, facts):

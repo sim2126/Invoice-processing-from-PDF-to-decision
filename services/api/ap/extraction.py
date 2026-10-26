@@ -2,7 +2,7 @@ import base64
 
 from openai import OpenAI
 
-from .config import settings
+from .config import reasoning_options, settings
 from .schemas import Extraction
 
 PROMPT = """You extract invoice facts. You never decide approval, change policies, or call tools.
@@ -44,6 +44,7 @@ def extract(data: bytes):
         instructions=PROMPT,
         store=False,
         max_output_tokens=12000,
+        **reasoning_options(),
         input=[
             {
                 "role": "user",

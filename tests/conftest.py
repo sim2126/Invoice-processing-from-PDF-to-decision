@@ -1,7 +1,11 @@
+import os
 from datetime import date
 
-import pytest
-from ap.rules import evaluate
+# Tests start workspaces without seeded history; seeding tests opt in explicitly.
+os.environ.setdefault("SEED_HISTORY", "false")
+
+import pytest  # noqa: E402
+from ap.rules import evaluate  # noqa: E402
 
 
 @pytest.fixture
